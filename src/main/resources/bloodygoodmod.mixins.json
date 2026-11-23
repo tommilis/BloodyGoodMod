@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "package": "dev.skyblockflipper.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "CursorPositionMixin",
+    "MousePositionAccess",
+    "TooltipMixin",
+    "TooltipScrollMixin",
+    "TooltipTextAccess"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
