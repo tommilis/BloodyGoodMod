@@ -5,7 +5,7 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.0.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.1.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 

@@ -5,6 +5,7 @@
   "client": [
     "CursorPositionMixin",
     "MousePositionAccess",
+    "MouseReleaseMixin",
     "TooltipMixin",
     "TooltipScrollMixin",
     "TooltipTextAccess"

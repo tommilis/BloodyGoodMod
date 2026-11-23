@@ -1,12 +1,14 @@
 package dev.skyblockflipper.mixin;
 
 import dev.skyblockflipper.CursorResetSetting;
+import dev.skyblockflipper.InventoryCursorAccess;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import org.lwjgl.glfw.GLFW;
+import org.lwjgl.system.MemoryStack;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
@@ -15,29 +17,34 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Gui.class)
-abstract class CursorPositionMixin {
+abstract class CursorPositionMixin implements InventoryCursorAccess {
     @Shadow public abstract Screen screen();
 
     @Unique private static final long SKYBLOCK_FLIPPER_TRANSITION_NS = 500_000_000L;
     @Unique private ClientLevel skyblockFlipper$level;
     @Unique private long skyblockFlipper$savedAt;
-    @Unique private double skyblockFlipper$x;
-    @Unique private double skyblockFlipper$y;
+    @Unique private Position bgm$savedPosition;
 
     @Inject(method = "setScreen", at = @At("HEAD"))
     private void skyblockFlipper$rememberCursor(Screen next, CallbackInfo callback) {
         Minecraft client = Minecraft.getInstance();
-        if (!CursorResetSetting.enabled() || client.level == null
+        var window = client.getWindow();
+        if (!CursorResetSetting.enabled() || client.level == null || !window.isFocused()
                 || (next != null && !(next instanceof AbstractContainerScreen<?>))) {
+            bgm$savedPosition = null;
             skyblockFlipper$level = null;
             return;
         }
 
         if (screen() instanceof AbstractContainerScreen<?> && !client.mouseHandler.isMouseGrabbed()) {
-            skyblockFlipper$level = client.level;
-            skyblockFlipper$savedAt = System.nanoTime();
-            skyblockFlipper$x = client.mouseHandler.xpos();
-            skyblockFlipper$y = client.mouseHandler.ypos();
+            try (var stack = MemoryStack.stackPush()) {
+                var x = stack.mallocDouble(1);
+                var y = stack.mallocDouble(1);
+                GLFW.glfwGetCursorPos(window.handle(), x, y);
+                bgm$savedPosition = new Position(x.get(0), y.get(0));
+                skyblockFlipper$level = client.level;
+                skyblockFlipper$savedAt = System.nanoTime();
+            }
         }
     }
 
@@ -47,29 +54,37 @@ abstract class CursorPositionMixin {
             return;
         }
 
+        var position = bgm$takeInventoryCursor();
+        if (position == null) {
+            return;
+        }
+
         Minecraft client = Minecraft.getInstance();
-        ClientLevel savedLevel = skyblockFlipper$level;
-        skyblockFlipper$level = null;
-        if (!CursorResetSetting.enabled() || savedLevel == null || savedLevel != client.level
-                || System.nanoTime() - skyblockFlipper$savedAt > SKYBLOCK_FLIPPER_TRANSITION_NS
-                || client.mouseHandler.isMouseGrabbed()) {
-            return;
-        }
-
-        var window = client.getWindow();
-        if (!window.isFocused()
-                || window.getScreenWidth() < 1 || window.getScreenHeight() < 1) {
-            return;
-        }
-        double x = Math.clamp(skyblockFlipper$x, 0, window.getScreenWidth() - 1);
-        double y = Math.clamp(skyblockFlipper$y, 0, window.getScreenHeight() - 1);
-        if (x == client.mouseHandler.xpos() && y == client.mouseHandler.ypos()) {
-            return;
-        }
-
-        GLFW.glfwSetCursorPos(window.handle(), x, y);
+        GLFW.glfwSetCursorPos(client.getWindow().handle(), position.x(), position.y());
         var mouse = (MousePositionAccess) client.mouseHandler;
-        mouse.skyblockFlipper$setX(x);
-        mouse.skyblockFlipper$setY(y);
+        mouse.skyblockFlipper$setX(position.x());
+        mouse.skyblockFlipper$setY(position.y());
+    }
+
+    @Override
+    public Position bgm$takeInventoryCursor() {
+        if (!(screen() instanceof AbstractContainerScreen<?>)) {
+            return null;
+        }
+
+        Minecraft client = Minecraft.getInstance();
+        var savedPosition = bgm$savedPosition;
+        var savedLevel = skyblockFlipper$level;
+        bgm$savedPosition = null;
+        skyblockFlipper$level = null;
+        var window = client.getWindow();
+        if (!CursorResetSetting.enabled() || savedPosition == null || savedLevel != client.level
+                || System.nanoTime() - skyblockFlipper$savedAt > SKYBLOCK_FLIPPER_TRANSITION_NS
+                || client.mouseHandler.isMouseGrabbed() || !window.isFocused()
+                || window.getScreenWidth() < 1 || window.getScreenHeight() < 1) {
+            return null;
+        }
+        return new Position(Math.clamp(savedPosition.x(), 0, window.getScreenWidth() - 1),
+                Math.clamp(savedPosition.y(), 0, window.getScreenHeight() - 1));
     }
 }
