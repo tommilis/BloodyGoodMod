@@ -118,7 +118,7 @@ final class HypixelAuctions {
     }
     private record AuctionPage(Map<String, FlipMarket.Listing<Item>> listings, Set<String> itemIds) {}
     private record PricingView(Map<Item, FlipMarket.Price> prices, Map<Item, FlipMarket.Price> unitPrices,
-                               Set<String> sold, Set<String> auctionItemIds, Snapshot snapshot) {}
+                               Map<Item, Map<Integer, Integer>> stackSales, Set<String> sold, Set<String> auctionItemIds, Snapshot snapshot) {}
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5)).build();
@@ -134,7 +134,7 @@ final class HypixelAuctions {
     }
 
     private volatile long nextSaleRequestAt;
-    private volatile PricingView pricing = new PricingView(Map.of(), Map.of(), Set.of(), Set.of(), null);
+    private volatile PricingView pricing = new PricingView(Map.of(), Map.of(), Map.of(), Set.of(), Set.of(), null);
     private volatile long lastActiveRequest;
     private volatile long salesCheckedAt;
     private volatile String listingError = "";
@@ -215,7 +215,7 @@ final class HypixelAuctions {
     private void publishSales(long now) throws IOException {
         var sales = database.readSales(now);
         saleCount = sales.count();
-        pricing = new PricingView(sales.prices(), sales.unitPrices(), sales.sold(), sales.auctionItemIds(), pricing.snapshot());
+        pricing = new PricingView(sales.prices(), sales.unitPrices(), sales.stackSales(), sales.sold(), sales.auctionItemIds(), pricing.snapshot());
     }
 
     Scan scan(FlipSettings settings) throws IOException, InterruptedException {
@@ -237,7 +237,7 @@ final class HypixelAuctions {
         var candidates = active.isCurrent(valuationTime)
                 ? FlipMarket.rank(active.byItem(), item -> comparablePrice(view, item, valuationTime),
                         item -> replacementCost(active, view.sold(), item, valuationTime),
-                        view.sold(), settings, valuationTime)
+                        item -> hasStackSales(item, view.stackSales()), view.sold(), settings, valuationTime)
                 : List.<FlipMarket.Candidate>of();
         return new Scan(active.time(), saleCount, pricedItems,
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), candidates);
@@ -391,7 +391,7 @@ final class HypixelAuctions {
             }
         }
         var snapshot = new Snapshot(updated, FlipMarket.indexListings(listings.values()), Map.copyOf(listings), Set.copyOf(marketIds));
-        pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.sold(), pricing.auctionItemIds(), snapshot);
+        pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.stackSales(), pricing.sold(), pricing.auctionItemIds(), snapshot);
         listingError = "";
         return snapshot;
     }
@@ -517,6 +517,17 @@ final class HypixelAuctions {
             }
         }
         return FlipMarket.listingPrice(comparablePrice(view, item, now), lowestBin, fresh, now);
+    }
+
+    static boolean hasStackSales(Item item, Map<Item, Map<Integer, Integer>> stackSales) {
+        if (item.count() == 1) {
+            return true;
+        }
+        var unit = item.unitKey();
+        return unit != null && stackSales.getOrDefault(unit, Map.of()).entrySet().stream()
+                .filter(sale -> sale.getKey() >= item.count())
+                .mapToInt(Map.Entry::getValue)
+                .sum() >= FlipMarket.MIN_STACK_SALES;
     }
 
     private static FlipMarket.Price comparablePrice(PricingView view, Item item, long now) {

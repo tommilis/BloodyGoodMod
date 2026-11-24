@@ -12,6 +12,7 @@ final class FlipMarket {
     static final long PRICING_WINDOW_MS = Duration.ofHours(24).toMillis();
     private static final long SALE_HALF_LIFE_MS = Duration.ofHours(6).toMillis();
     static final int MIN_SALES = 3;
+    static final int MIN_STACK_SALES = 5;
     static final int MAX_COMPARABLE_SALES = 64;
 
     record Sale<K>(String id, K item, long price, long soldAt) {}
@@ -124,6 +125,7 @@ final class FlipMarket {
     static <K> List<Candidate> rank(Map<K, List<Listing<K>>> byItem,
                                     java.util.function.Function<K, Price> priceFor,
                                     java.util.function.ToLongFunction<K> replacementFor,
+                                    java.util.function.Predicate<K> hasStackSales,
                                     Set<String> sold, FlipSettings settings, long now) {
         List<Candidate> candidates = new ArrayList<>();
         for (var group : byItem.entrySet()) {
@@ -141,17 +143,18 @@ final class FlipMarket {
                     competingBins++;
                 }
             }
-            if (competingBins == 0) {
+            if (competingBins == 0 || listing.price() > percentOf(competingBin, 90)) {
                 continue;
             }
             Price price = priceFor.apply(group.getKey());
             if (price == null || !price.isCurrent(now)
-                    || price.sales() < Math.max(MIN_SALES, settings.minComparableSales())) {
+                    || price.sales() < Math.max(MIN_SALES, settings.minComparableSales())
+                    || (price.perUnit() && !hasStackSales.test(group.getKey()))) {
                 continue;
             }
 
             long replacement = replacementFor.applyAsLong(group.getKey());
-            long resale = Math.min(resale(price, competingBin), replacement);
+            long resale = Math.min(Math.min(price.recentSalePrice(), percentOf(competingBin, 99)), replacement);
             if (resale <= listing.price()) {
                 continue;
             }
@@ -168,6 +171,10 @@ final class FlipMarket {
         candidates.sort(Comparator.comparingDouble(Candidate::rankingScore).reversed()
                 .thenComparing(Candidate::id));
         return candidates;
+    }
+
+    private static long percentOf(long coins, int percent) {
+        return (coins / 100) * percent + (coins % 100) * percent / 100;
     }
 
     static long estimatedFees(long resale) {

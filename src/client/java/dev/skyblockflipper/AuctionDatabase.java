@@ -33,7 +33,7 @@ final class AuctionDatabase {
     private static final long SOLD_LOOKBACK = Duration.ofMinutes(10).toMillis();
 
     record Sales(Map<HypixelAuctions.Item, FlipMarket.Price> prices, Map<HypixelAuctions.Item, FlipMarket.Price> unitPrices,
-                 Set<String> sold, Set<String> auctionItemIds, int count) {}
+                 Map<HypixelAuctions.Item, Map<Integer, Integer>> stackSales, Set<String> sold, Set<String> auctionItemIds, int count) {}
     record SeenFlip(FlipMarket.Candidate candidate, long seenAt) {}
 
     private final Path path;
@@ -139,6 +139,7 @@ final class AuctionDatabase {
         try (var connection = open()) {
             var exactSales = new HashMap<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>>();
             var auctionItemIds = new HashSet<String>();
+            var stackSales = new HashMap<HypixelAuctions.Item, Map<Integer, Integer>>();
             var unitSales = new HashMap<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>>();
             try (var query = connection.prepareStatement("""
                     WITH recent AS (
@@ -173,6 +174,9 @@ final class AuctionDatabase {
                                 rows.getLong("price"), rows.getLong("sold_at"));
                         exactSales.computeIfAbsent(item, ignored -> new ArrayList<>()).add(sale);
                         var unit = item.unitKey();
+                        if (unit != null && item.count() > 1) {
+                            stackSales.computeIfAbsent(unit, ignored -> new HashMap<>()).merge(item.count(), 1, Integer::sum);
+                        }
                         if (unit != null && sale.price() >= item.count()) {
                             unitSales.computeIfAbsent(unit, ignored -> new ArrayList<>()).add(
                                     new FlipMarket.Sale<>(sale.id(), unit, sale.price() / item.count(), sale.soldAt()));
@@ -180,6 +184,7 @@ final class AuctionDatabase {
                     }
                 }
             }
+            stackSales.replaceAll((unit, counts) -> Map.copyOf(counts));
             var prices = priceGroups(exactSales, now);
             var unitPrices = priceGroups(unitSales, now);
             var sold = new HashSet<String>();
@@ -193,7 +198,8 @@ final class AuctionDatabase {
             }
             try (var statement = connection.createStatement();
                  var row = statement.executeQuery("SELECT count(*) FROM sales")) {
-                return new Sales(Map.copyOf(prices), Map.copyOf(unitPrices), Set.copyOf(sold), Set.copyOf(auctionItemIds), row.getInt(1));
+                return new Sales(Map.copyOf(prices), Map.copyOf(unitPrices), Map.copyOf(stackSales),
+                        Set.copyOf(sold), Set.copyOf(auctionItemIds), row.getInt(1));
             }
         } catch (SQLException failure) {
             throw new IOException("Could not read the local sales database.", failure);
