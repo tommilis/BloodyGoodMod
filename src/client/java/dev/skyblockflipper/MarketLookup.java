@@ -33,9 +33,9 @@ public final class MarketLookup {
     private static final long RETRY_MS = Duration.ofMinutes(1).toMillis();
     private static MarketLookup instance;
 
-    record ItemInfo(String name, boolean auctionExplicit, boolean auctionBlocked, boolean soulbound) {}
+    record ItemInfo(String name, boolean auctionExplicit, boolean auctionBlocked) {}
     record Catalog(Set<String> bazaarProducts, Map<String, ItemInfo> items, long expiresAt) {}
-    record Query(String itemId, String productId, String hoverName, boolean soulbound, String auctionId) {}
+    record Query(String itemId, String productId, String hoverName, String auctionId) {}
     private record Pending(AbstractContainerScreen<?> screen, Slot slot, Query query, ClientPacketListener connection) {}
 
     private final KeyMapping key;
@@ -93,9 +93,6 @@ public final class MarketLookup {
         Query query = query(slot.getItem());
         if (query == null) {
             return feedback(client, "No market item ID found for this stack.");
-        }
-        if (query.soulbound()) {
-            return feedback(client, "This item is soulbound.");
         }
         var request = new Pending(screen, slot, query, connection);
         long now = System.currentTimeMillis();
@@ -161,9 +158,6 @@ public final class MarketLookup {
         Query query = request.query();
         ItemInfo item = data.items().get(query.itemId());
         long now = System.currentTimeMillis();
-        if (item != null && item.soulbound()) {
-            return feedback(client, "This item is soulbound.");
-        }
         if ((item != null && item.auctionBlocked()) || query.auctionId().isEmpty()) {
             return noMarket(client, query);
         }
@@ -246,9 +240,6 @@ public final class MarketLookup {
 
     static String route(Catalog data, Query query, Predicate<String> auctionEvidence) {
         ItemInfo item = data.items().get(query.itemId());
-        if (query.soulbound() || item != null && item.soulbound()) {
-            return null;
-        }
         String bazaarId = bazaarId(data, query);
         if (bazaarId != null) {
             ItemInfo product = data.items().get(bazaarId);
@@ -276,7 +267,7 @@ public final class MarketLookup {
         String match = null;
         for (String productId : data.bazaarProducts()) {
             ItemInfo product = data.items().get(productId);
-            if (product != null && !product.soulbound() && product.name().equalsIgnoreCase(query.hoverName())) {
+            if (product != null && product.name().equalsIgnoreCase(query.hoverName())) {
                 if (match != null) {
                     return null;
                 }
@@ -292,10 +283,8 @@ public final class MarketLookup {
             JsonObject item = element.getAsJsonObject();
             var auction = item.get("can_auction");
             boolean hasAuction = auction != null && auction.isJsonPrimitive() && auction.getAsJsonPrimitive().isBoolean();
-            var soulbound = item.get("soulbound");
             items.put(item.get("id").getAsString(), new ItemInfo(item.get("name").getAsString(),
-                    hasAuction && auction.getAsBoolean(), hasAuction && !auction.getAsBoolean(),
-                    soulbound != null && soulbound.isJsonPrimitive() && !soulbound.getAsString().equalsIgnoreCase("false")));
+                    hasAuction && auction.getAsBoolean(), hasAuction && !auction.getAsBoolean()));
         }
         return new Catalog(Set.copyOf(bazaar.getAsJsonObject("products").keySet()), Map.copyOf(items), expiresAt);
     }
@@ -305,46 +294,41 @@ public final class MarketLookup {
             return null;
         }
         var lore = stack.get(DataComponents.LORE);
-        boolean bound = lore != null && lore.lines().stream().anyMatch(line -> {
-            String label = line.getString().strip();
-            return label.equalsIgnoreCase("Soulbound") || label.equalsIgnoreCase("Co-op Soulbound")
-                    || label.equalsIgnoreCase("* Soulbound *") || label.equalsIgnoreCase("* Co-op Soulbound *");
-        });
         var item = HypixelAuctions.itemOf(stack).orElse(null);
         if (item == null) {
-            return vanillaQuery(stack, bound);
+            return vanillaQuery(stack);
         }
         CompoundTag attributes = item.attributes();
         String id = attributes.getStringOr("id", "");
         String name = baseName(stack.getHoverName().getString());
         if (MarketVariants.isShard(id)) {
             var shard = MarketVariants.shard(id, attributes, name);
-            return shard == null ? new Query(id, "", name, bound, "")
-                    : new Query(id, shard.productId(), shard.searchName(), bound, "");
+            return shard == null ? new Query(id, "", name, "")
+                    : new Query(id, shard.productId(), shard.searchName(), "");
         }
         if (id.equals("ENCHANTED_BOOK")) {
             var enchantments = attributes.getCompoundOrEmpty("enchantments");
             if (enchantments.size() != 1) {
-                return new Query(id, "", name, bound, "");
+                return new Query(id, "", name, "");
             }
             String enchantment = enchantments.keySet().iterator().next();
             int level = enchantments.getIntOr(enchantment, 0);
             if (level < 1) {
-                return new Query(id, "", name, bound, "");
+                return new Query(id, "", name, "");
             }
             String product = "ENCHANTMENT_" + enchantment.toUpperCase(Locale.ROOT) + "_" + level;
             name = enchantmentSearch(enchantment, level, lore == null ? java.util.List.of()
                     : lore.lines().stream().map(Component::getString).toList());
-            return new Query(id, product, name, bound, "");
+            return new Query(id, product, name, "");
         }
         String marketId = item.marketId();
         if (marketId.startsWith("PET:") && name.isBlank()) {
             name = marketId.substring(4).replace('_', ' ');
         }
-        return new Query(id, id, name, bound, marketId);
+        return new Query(id, id, name, marketId);
     }
 
-    private static Query vanillaQuery(ItemStack stack, boolean bound) {
+    private static Query vanillaQuery(ItemStack stack) {
         if (stack.has(DataComponents.CUSTOM_NAME) || stack.has(DataComponents.LORE)) {
             return null;
         }
@@ -353,7 +337,7 @@ public final class MarketLookup {
             return null;
         }
         // Vanilla stacks only use Bazaar membership. Auction evidence needs a SkyBlock ID.
-        return new Query("", id.getPath().toUpperCase(Locale.ROOT), stack.getHoverName().getString(), bound, "");
+        return new Query("", id.getPath().toUpperCase(Locale.ROOT), stack.getHoverName().getString(), "");
     }
 
     static String enchantmentSearch(String enchantment, int level, java.util.List<String> lore) {

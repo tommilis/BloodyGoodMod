@@ -21,7 +21,7 @@ Each new batch of flips also shows a five-second HUD notification for the top re
 
 ## Search a hovered item
 
-Under **Options → Controls → Key Binds → SkyBlock Flipper**, bind **Search hovered item market**. Hover an item in your inventory, a backpack, or a storage menu, then press the key. The shortcut opens the Bazaar for a known product or searches the Auction House when the item catalog or observed auctions confirm it can trade there. NPC-only, soulbound, and unverified items leave the menu open. Standard Hypixel access requirements apply.
+Under **Options → Controls → Key Binds → SkyBlock Flipper**, bind **Search hovered item market**. Hover an item in your inventory, a backpack, or a storage menu, then press the key. The shortcut opens the Bazaar for a known product or searches the Auction House when the item catalog or observed auctions confirm it can trade there. A soulbound copy can look up the same market as other copies of that item. NPC-only and unverified items leave the menu open. Standard Hypixel access requirements apply.
 
 ## Listing an item
 
