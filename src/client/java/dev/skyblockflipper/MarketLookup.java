@@ -86,8 +86,11 @@ public final class MarketLookup {
             return false;
         }
         Query query = query(slot.getItem());
-        if (query == null || query.soulbound()) {
-            return false;
+        if (query == null) {
+            return feedback(client, "No market item ID found for this stack.");
+        }
+        if (query.soulbound()) {
+            return feedback(client, "This item is soulbound.");
         }
         var request = new Pending(screen, slot, query, connection);
         long now = System.currentTimeMillis();
@@ -95,7 +98,7 @@ public final class MarketLookup {
             return openOrCheckAuctions(client, request, catalog);
         }
         if (!loading && now < retryAt) {
-            return false;
+            return feedback(client, "Market data unavailable. Try again shortly.");
         }
         pending = request;
         if (!loading) {
@@ -103,7 +106,7 @@ public final class MarketLookup {
             retryAt = now + RETRY_MS;
             Thread.startVirtualThread(() -> refresh(client));
         }
-        return true;
+        return feedback(client, "Loading market data. Keep hovering over the item.");
     }
 
     private void refresh(Minecraft client) {
@@ -128,7 +131,7 @@ public final class MarketLookup {
                 return;
             }
             if (result == null) {
-                client.player.sendOverlayMessage(Component.literal("Market data unavailable. Try again shortly."));
+                feedback(client, "Market data unavailable. Try again shortly.");
                 return;
             }
             openOrCheckAuctions(client, request, result);
@@ -149,31 +152,54 @@ public final class MarketLookup {
         Query query = request.query();
         ItemInfo item = data.items().get(query.itemId());
         long now = System.currentTimeMillis();
-        if (item == null || item.soulbound() || item.auctionBlocked() || query.auctionId().isEmpty()
-                || data.bazaarProducts().contains(query.productId()) || !auctions.needsAuctionEvidence(now)) {
-            return false;
+        if (item != null && item.soulbound()) {
+            return feedback(client, "This item is soulbound.");
+        }
+        if (item != null && item.auctionBlocked() || query.auctionId().isEmpty()
+                || !auctions.needsAuctionEvidence(now)) {
+            return noMarket(client, query);
         }
         pending = request;
         if (!loading) {
             loading = true;
             worker.execute(() -> {
+                boolean refreshed = false;
                 try {
                     auctions.refreshListings();
+                    refreshed = true;
                 } catch (InterruptedException failure) {
                     Thread.currentThread().interrupt();
                 } catch (IOException | RuntimeException failure) {
                     LOGGER.debug("Could not verify whether an item is auctionable", failure);
                 }
+                boolean completed = refreshed;
                 client.execute(() -> {
                     loading = false;
                     Pending latest = pending;
                     pending = null;
-                    if (latest != null && stillHovering(client, latest)) {
-                        open(client, latest, data);
+                    if (latest != null && stillHovering(client, latest) && !open(client, latest, data)) {
+                        if (completed) {
+                            noMarket(client, latest.query());
+                        } else {
+                            feedback(client, "Auction data unavailable. Try again shortly.");
+                        }
                     }
                 });
             });
         }
+        return feedback(client, "Checking Auction House listings. Keep hovering over the item.");
+    }
+
+    private static boolean noMarket(Minecraft client, Query query) {
+        if (query.itemId().equals("ENCHANTED_BOOK") && query.productId().isEmpty()) {
+            return feedback(client, "Bazaar lookup needs a book with one readable enchantment.");
+        }
+        String id = query.productId().isEmpty() ? query.itemId() : query.productId();
+        return feedback(client, "No verified Bazaar or Auction House market for " + id + ".");
+    }
+
+    private static boolean feedback(Minecraft client, String message) {
+        client.player.sendOverlayMessage(Component.literal(message));
         return true;
     }
 
@@ -192,10 +218,11 @@ public final class MarketLookup {
         if (query.soulbound() || item != null && item.soulbound()) {
             return null;
         }
-        if (data.bazaarProducts().contains(query.productId())) {
-            ItemInfo product = data.items().get(query.productId());
+        String bazaarId = bazaarId(data, query);
+        if (bazaarId != null) {
+            ItemInfo product = data.items().get(bazaarId);
             String name = product == null ? query.hoverName() : product.name();
-            return command("bz", query.productId().startsWith("ENCHANTMENT_") ? query.hoverName() : name);
+            return command("bz", bazaarId.startsWith("ENCHANTMENT_") ? query.hoverName() : name);
         }
         if (item != null && item.auctionBlocked()) {
             return null;
@@ -204,6 +231,27 @@ public final class MarketLookup {
             return command("ahsearch", item == null || !query.itemId().equals(query.auctionId()) ? query.hoverName() : item.name());
         }
         return null;
+    }
+
+    private static String bazaarId(Catalog data, Query query) {
+        if (data.bazaarProducts().contains(query.productId())) {
+            return query.productId();
+        }
+        if (!query.itemId().isEmpty()) {
+            return null;
+        }
+        // Some vanilla materials use legacy Bazaar IDs, such as LOG for Oak Log.
+        String match = null;
+        for (String productId : data.bazaarProducts()) {
+            ItemInfo product = data.items().get(productId);
+            if (product != null && !product.soulbound() && product.name().equalsIgnoreCase(query.hoverName())) {
+                if (match != null) {
+                    return null;
+                }
+                match = productId;
+            }
+        }
+        return match;
     }
 
     static Catalog parse(JsonObject bazaar, JsonObject catalog, long expiresAt) {
@@ -240,12 +288,12 @@ public final class MarketLookup {
         if (id.equals("ENCHANTED_BOOK")) {
             var enchantments = attributes.getCompoundOrEmpty("enchantments");
             if (enchantments.size() != 1) {
-                return null;
+                return new Query(id, "", name, bound, "");
             }
             String enchantment = enchantments.keySet().iterator().next();
             int level = enchantments.getIntOr(enchantment, 0);
             if (level < 1) {
-                return null;
+                return new Query(id, "", name, bound, "");
             }
             String product = "ENCHANTMENT_" + enchantment.toUpperCase(Locale.ROOT) + "_" + level;
             name = enchantmentSearch(enchantment, level, lore == null ? java.util.List.of()
