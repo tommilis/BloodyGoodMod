@@ -11,6 +11,7 @@ import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import org.lwjgl.glfw.GLFW;
@@ -23,6 +24,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.function.Predicate;
 
 public final class MarketLookup {
@@ -39,15 +41,17 @@ public final class MarketLookup {
     private final KeyMapping key;
     private final SkyBlockLocation location;
     private final HypixelAuctions auctions;
+    private final Executor worker;
     private Catalog catalog;
     private Pending pending;
     private long retryAt;
     private boolean loading;
 
-    MarketLookup(KeyMapping key, SkyBlockLocation location, HypixelAuctions auctions) {
+    MarketLookup(KeyMapping key, SkyBlockLocation location, HypixelAuctions auctions, Executor worker) {
         this.key = key;
         this.location = location;
         this.auctions = auctions;
+        this.worker = worker;
     }
 
     void register() {
@@ -88,7 +92,7 @@ public final class MarketLookup {
         var request = new Pending(screen, slot, query, connection);
         long now = System.currentTimeMillis();
         if (catalog != null && now < catalog.expiresAt()) {
-            return open(client, request, catalog);
+            return openOrCheckAuctions(client, request, catalog);
         }
         if (!loading && now < retryAt) {
             return false;
@@ -119,19 +123,63 @@ public final class MarketLookup {
             pending = null;
             if (result != null) {
                 catalog = result;
-                if (request != null && client.gui.screen() == request.screen()
-                        && ((HoveredSlotAccess) request.screen()).bgm$hoveredSlot() == request.slot()
-                        && request.query().equals(query(request.slot().getItem()))) {
-                    open(client, request, result);
-                }
             }
+            if (request == null || !stillHovering(client, request)) {
+                return;
+            }
+            if (result == null) {
+                client.player.sendOverlayMessage(Component.literal("Market data unavailable. Try again shortly."));
+                return;
+            }
+            openOrCheckAuctions(client, request, result);
         });
     }
 
+    private boolean stillHovering(Minecraft client, Pending request) {
+        return client.player != null && location.connection(client) == request.connection()
+                && client.gui.screen() == request.screen()
+                && ((HoveredSlotAccess) request.screen()).bgm$hoveredSlot() == request.slot()
+                && request.query().equals(query(request.slot().getItem()));
+    }
+
+    private boolean openOrCheckAuctions(Minecraft client, Pending request, Catalog data) {
+        if (open(client, request, data)) {
+            return true;
+        }
+        Query query = request.query();
+        ItemInfo item = data.items().get(query.itemId());
+        long now = System.currentTimeMillis();
+        if (item == null || item.soulbound() || item.auctionBlocked() || query.auctionId().isEmpty()
+                || data.bazaarProducts().contains(query.productId()) || !auctions.needsAuctionEvidence(now)) {
+            return false;
+        }
+        pending = request;
+        if (!loading) {
+            loading = true;
+            worker.execute(() -> {
+                try {
+                    auctions.refreshListings();
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                } catch (IOException | RuntimeException failure) {
+                    LOGGER.debug("Could not verify whether an item is auctionable", failure);
+                }
+                client.execute(() -> {
+                    loading = false;
+                    Pending latest = pending;
+                    pending = null;
+                    if (latest != null && stillHovering(client, latest)) {
+                        open(client, latest, data);
+                    }
+                });
+            });
+        }
+        return true;
+    }
+
     private boolean open(Minecraft client, Pending request, Catalog data) {
-        String command = route(data, request.query(),
-                id -> auctions.hasAuctionEvidence(id, System.currentTimeMillis()));
-        if (command == null || client.player == null || location.connection(client) != request.connection()) {
+        String command = route(data, request.query(), auctions::hasAuctionEvidence);
+        if (command == null || !stillHovering(client, request)) {
             return false;
         }
         client.player.closeContainer();
@@ -188,7 +236,7 @@ public final class MarketLookup {
         }
         CompoundTag attributes = item.attributes();
         String id = attributes.getStringOr("id", "");
-        String name = stack.getHoverName().getString().replaceFirst("(?i)^\\[lvl \\d+\\]\\s*", "");
+        String name = baseName(stack.getHoverName().getString());
         if (id.equals("ENCHANTED_BOOK")) {
             var enchantments = attributes.getCompoundOrEmpty("enchantments");
             if (enchantments.size() != 1) {
@@ -200,13 +248,8 @@ public final class MarketLookup {
                 return null;
             }
             String product = "ENCHANTMENT_" + enchantment.toUpperCase(Locale.ROOT) + "_" + level;
-            // The stack's display name may just be "Enchanted Book". Its first lore line carries the enchantment name.
-            if (lore != null && !lore.lines().isEmpty()) {
-                name = lore.lines().getFirst().getString();
-            }
-            if (name.equalsIgnoreCase("Enchanted Book") || name.isBlank()) {
-                name = enchantment.replace('_', ' ') + " " + level;
-            }
+            name = enchantmentSearch(enchantment, level, lore == null ? java.util.List.of()
+                    : lore.lines().stream().map(Component::getString).toList());
             return new Query(id, product, name, bound, "");
         }
         String marketId = item.marketId();
@@ -226,6 +269,36 @@ public final class MarketLookup {
         }
         // Vanilla stacks only use Bazaar membership. Auction evidence needs a SkyBlock ID.
         return new Query("", id.getPath().toUpperCase(Locale.ROOT), stack.getHoverName().getString(), bound, "");
+    }
+
+    static String enchantmentSearch(String enchantment, int level, java.util.List<String> lore) {
+        String key = enchantment.toLowerCase(Locale.ROOT);
+        String words = key.equals("ultimate_wise") ? "ultimate wise" : key.replaceFirst("^ultimate_", "").replace('_', ' ');
+        String name = java.util.Arrays.stream(words.split(" "))
+                .filter(word -> !word.isEmpty())
+                .map(word -> Character.toUpperCase(word.charAt(0)) + word.substring(1))
+                .collect(java.util.stream.Collectors.joining(" "));
+        String roman = switch (level) {
+            case 1 -> "I";
+            case 2 -> "II";
+            case 3 -> "III";
+            case 4 -> "IV";
+            case 5 -> "V";
+            case 6 -> "VI";
+            case 7 -> "VII";
+            case 8 -> "VIII";
+            case 9 -> "IX";
+            case 10 -> "X";
+            default -> Integer.toString(level);
+        };
+        String expected = name + " " + roman;
+        return lore.stream().map(line -> line.replaceAll("§.", "").strip())
+                .filter(line -> line.equalsIgnoreCase(expected)).findFirst().orElse(expected);
+    }
+
+    static String baseName(String name) {
+        return name.replaceAll("§.", "").replaceFirst("(?i)^\\[lvl \\d+\\]\\s*", "")
+                .replaceFirst("[\\s✪✦★☆✯➊➋➌➍➎]+$", "").strip();
     }
 
     private static String command(String prefix, String name) {

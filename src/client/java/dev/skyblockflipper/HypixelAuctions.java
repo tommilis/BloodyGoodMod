@@ -27,6 +27,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -85,11 +86,12 @@ final class HypixelAuctions {
     record Scan(long snapshotTime, int saleCount, int pricedItems, long elapsedMillis,
                 List<FlipMarket.Candidate> candidates) {}
     private record Snapshot(long time, Map<Item, List<FlipMarket.Listing<Item>>> byItem,
-                            Map<String, FlipMarket.Listing<Item>> listingsById) {
+                            Map<String, FlipMarket.Listing<Item>> listingsById, Set<String> auctionItemIds) {
         boolean isCurrent(long now) {
             return now - time <= MAX_SNAPSHOT_AGE_MS;
         }
     }
+    private record AuctionPage(Map<String, FlipMarket.Listing<Item>> listings, Set<String> itemIds) {}
     private record PricingView(Map<Item, FlipMarket.Price> prices, Map<Item, FlipMarket.Price> unitPrices,
                                Set<String> sold, Set<String> auctionItemIds, Snapshot snapshot) {}
 
@@ -255,10 +257,11 @@ final class HypixelAuctions {
 
         Map<String, FlipMarket.Listing<Item>> listings = new LinkedHashMap<>();
         var previousItems = cached == null ? Map.<String, FlipMarket.Listing<Item>>of() : cached.listingsById();
-        readListings(first, listings, previousItems, now);
+        var marketIds = new HashSet<String>();
+        readListings(first, listings, marketIds, previousItems, now);
         try (var workers = Executors.newFixedThreadPool(4)) {
-            var completed = new ExecutorCompletionService<Map<String, FlipMarket.Listing<Item>>>(workers);
-            var outstanding = new ArrayList<Future<Map<String, FlipMarket.Listing<Item>>>>();
+            var completed = new ExecutorCompletionService<AuctionPage>(workers);
+            var outstanding = new ArrayList<Future<AuctionPage>>();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(50);
             try {
                 for (int page = 1; page < pages; page++) {
@@ -271,8 +274,9 @@ final class HypixelAuctions {
                             throw new IOException("Hypixel refreshed its listings mid-scan. Try again on the next scan.");
                         }
                         Map<String, FlipMarket.Listing<Item>> pageListings = new LinkedHashMap<>();
-                        readListings(data, pageListings, previousItems, now);
-                        return pageListings;
+                        var pageMarketIds = new HashSet<String>();
+                        readListings(data, pageListings, pageMarketIds, previousItems, now);
+                        return new AuctionPage(pageListings, pageMarketIds);
                     }));
                 }
 
@@ -282,7 +286,9 @@ final class HypixelAuctions {
                         throw new IOException("The full auction scan timed out.");
                     }
                     try {
-                        finished.get().forEach(listings::putIfAbsent);
+                        var result = finished.get();
+                        result.listings().forEach(listings::putIfAbsent);
+                        marketIds.addAll(result.itemIds());
                     } catch (ExecutionException failure) {
                         if (failure.getCause() instanceof IOException io) {
                             throw io;
@@ -294,19 +300,19 @@ final class HypixelAuctions {
                 outstanding.forEach(request -> request.cancel(true));
             }
         }
-        var snapshot = new Snapshot(updated, FlipMarket.indexListings(listings.values()), Map.copyOf(listings));
+        var snapshot = new Snapshot(updated, FlipMarket.indexListings(listings.values()), Map.copyOf(listings), Set.copyOf(marketIds));
         pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.sold(), pricing.auctionItemIds(), snapshot);
         listingError = "";
         return snapshot;
     }
 
     private static void readListings(JsonObject page, Map<String, FlipMarket.Listing<Item>> listings,
-                                     Map<String, FlipMarket.Listing<Item>> previousItems, long now) throws IOException {
+                                     Set<String> marketIds, Map<String, FlipMarket.Listing<Item>> previousItems,
+                                     long now) throws IOException {
         for (JsonElement row : auctions(page)) {
             JsonObject auction = row.getAsJsonObject();
             long end = auction.get("end").getAsLong();
-            if (!isTrue(auction, "bin") || isTrue(auction, "claimed") || end <= now
-                    || auction.get("highest_bid_amount").getAsLong() != 0) {
+            if (isTrue(auction, "claimed") || end <= now) {
                 continue;
             }
             long price = auction.get("starting_bid").getAsLong();
@@ -318,7 +324,13 @@ final class HypixelAuctions {
             var previous = previousItems.get(id);
             Item item = previous == null ? itemOf(auction).orElse(null) : previous.item();
             if (item != null) {
-                listings.putIfAbsent(id, new FlipMarket.Listing<>(id, item, name, price, end));
+                String marketId = item.marketId();
+                if (!marketId.isBlank()) {
+                    marketIds.add(marketId);
+                }
+                if (isTrue(auction, "bin") && auction.get("highest_bid_amount").getAsLong() == 0) {
+                    listings.putIfAbsent(id, new FlipMarket.Listing<>(id, item, name, price, end));
+                }
             }
         }
     }
@@ -370,14 +382,16 @@ final class HypixelAuctions {
         return Optional.of(new Item(count, attributes));
     }
 
-    boolean hasAuctionEvidence(String itemId, long now) {
+    boolean hasAuctionEvidence(String itemId) {
         var view = pricing;
-        if (view.auctionItemIds().contains(itemId)) {
-            return true;
-        }
         var snapshot = view.snapshot();
-        return snapshot != null && snapshot.isCurrent(now) && snapshot.byItem().keySet().stream()
-                .anyMatch(item -> item.marketId().equals(itemId));
+        return view.auctionItemIds().contains(itemId)
+                || snapshot != null && snapshot.auctionItemIds().contains(itemId);
+    }
+
+    boolean needsAuctionEvidence(long now) {
+        var snapshot = pricing.snapshot();
+        return (snapshot == null || !snapshot.isCurrent(now)) && listingRefreshDue(now);
     }
 
     boolean canOpenAuction(String id, long now) {
