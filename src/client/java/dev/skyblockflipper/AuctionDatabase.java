@@ -34,7 +34,7 @@ final class AuctionDatabase {
     private static final long SOLD_LOOKBACK = Duration.ofMinutes(10).toMillis();
 
     record Sales(Map<HypixelAuctions.Item, FlipMarket.Price> prices, Map<HypixelAuctions.Item, FlipMarket.Price> unitPrices,
-                 Set<String> sold, int count) {}
+                 Set<String> sold, Set<String> auctionItemIds, int count) {}
     record SeenFlip(FlipMarket.Candidate candidate, long seenAt) {}
 
     private final Path path;
@@ -150,6 +150,7 @@ final class AuctionDatabase {
     Sales readSales(long now) throws IOException {
         try (var connection = open()) {
             var prices = new HashMap<HypixelAuctions.Item, FlipMarket.Price>();
+            var auctionItemIds = new HashSet<String>();
             var unitSales = new HashMap<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>>();
             try (var query = connection.prepareStatement("""
                     WITH recent AS (
@@ -178,6 +179,10 @@ final class AuctionDatabase {
                             var data = new ByteArrayInputStream(rows.getBytes("attributes"));
                             var attributes = NbtIo.readCompressed(data, NbtAccounter.create(4L * 1024 * 1024));
                             item = new HypixelAuctions.Item(rows.getInt("item_count"), attributes);
+                            String itemId = item.marketId();
+                            if (!itemId.isBlank()) {
+                                auctionItemIds.add(itemId);
+                            }
                         }
                         var sale = new FlipMarket.Sale<>(rows.getString("id"), item,
                                 rows.getLong("price"), rows.getLong("sold_at"));
@@ -209,7 +214,7 @@ final class AuctionDatabase {
             }
             try (var statement = connection.createStatement();
                  var row = statement.executeQuery("SELECT count(*) FROM sales")) {
-                return new Sales(Map.copyOf(prices), Map.copyOf(unitPrices), Set.copyOf(sold), row.getInt(1));
+                return new Sales(Map.copyOf(prices), Map.copyOf(unitPrices), Set.copyOf(sold), Set.copyOf(auctionItemIds), row.getInt(1));
             }
         } catch (SQLException failure) {
             throw new IOException("Could not read the local sales database.", failure);

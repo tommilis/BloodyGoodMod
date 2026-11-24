@@ -5,7 +5,7 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.4.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.5.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 
@@ -18,6 +18,10 @@ Open `/bgm` to turn automatic alerts on or off, set the scan interval (10–3600
 Open chat and click a flip to open that listing directly, or press your configured key while playing to open the most recent flip if it still appears available in the latest usable snapshot. The key starts unbound. Each input submits a single `/viewauction` command. You still choose whether to buy. The alert shows estimated profit and return on the buy price. Hover for buy price, estimated resale, and comparable sales. Hypixel's [Allowed Modifications guide](https://support.hypixel.net/hc/en-us/articles/6472550754962-Hypixel-Allowed-Modifications) does not expressly approve auction flip alerts or a direct auction hotkey.
 
 Each new batch of flips also shows a five-second HUD notification for the top result. The HUD leaves movement and controls available, and all reported flips still appear in chat.
+
+## Search a hovered item
+
+Under **Options → Controls → Key Binds → SkyBlock Flipper**, bind **Search hovered item market**. Hover an item in your inventory, a backpack, or a storage menu, then press the key. The shortcut opens the Bazaar for a known product or searches the Auction House when the item catalog or observed auctions confirm it can trade there. NPC-only, soulbound, and unverified items leave the menu open. Standard Hypixel access requirements apply.
 
 ## Listing an item
 

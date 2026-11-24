@@ -91,6 +91,9 @@ public final class FlipperClient implements ClientModInitializer {
         var category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("skyblock_flipper", "keys"));
         auctionKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.skyblock_flipper.latest",
                 InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), category));
+        var marketKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.skyblock_flipper.market_lookup",
+                InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), category));
+        new MarketLookup(marketKey, location, auctions).register();
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
         HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT,
                 Identifier.fromNamespaceAndPath("bloodygoodmod", "flip_alert"), (graphics, delta) -> {

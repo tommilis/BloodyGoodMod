@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class HypixelAuctions {
     private static final Logger LOGGER = LoggerFactory.getLogger("skyblock-flipper");
     private static final long SAMPLE_INTERVAL_MS = Duration.ofMinutes(1).toMillis();
-    private static final String API = "https://api.hypixel.net/v2/skyblock/";
+    private static final String API = "https://api.hypixel.net/v2/";
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(12);
     private static final long ACTIVE_CHECK_INTERVAL_MS = FlipSettings.MIN_SECONDS * 1000L;
     private static final long MAX_SNAPSHOT_AGE_MS = Duration.ofMinutes(2).toMillis();
@@ -52,6 +52,28 @@ final class HypixelAuctions {
     private static final int MAX_ITEM_BYTES = 256 * 1024;
 
     record Item(int count, CompoundTag attributes) {
+        String marketId() {
+            String id = attributes.getStringOr("id", "");
+            if (id.equals("PET")) {
+                try {
+                    String type = JsonParser.parseString(attributes.getStringOr("petInfo", ""))
+                            .getAsJsonObject().get("type").getAsString();
+                    return type.isBlank() ? "" : "PET:" + type.toUpperCase(Locale.ROOT);
+                } catch (RuntimeException malformedPet) {
+                    return "";
+                }
+            }
+            if (id.equals("RUNE") || id.equals("UNIQUE_RUNE")) {
+                var runes = attributes.getCompoundOrEmpty("runes");
+                if (runes.size() != 1) {
+                    return "";
+                }
+                String type = runes.keySet().iterator().next();
+                return id + ":" + type + ":" + runes.getIntOr(type, 0);
+            }
+            return id;
+        }
+
         Item unitKey() {
             // Keep every upgrade and unknown field significant. Only plain stacks share a unit price.
             return attributes.size() == 1 ? new Item(1, attributes) : null;
@@ -69,7 +91,7 @@ final class HypixelAuctions {
         }
     }
     private record PricingView(Map<Item, FlipMarket.Price> prices, Map<Item, FlipMarket.Price> unitPrices,
-                               Set<String> sold, Snapshot snapshot) {}
+                               Set<String> sold, Set<String> auctionItemIds, Snapshot snapshot) {}
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5)).build();
@@ -82,7 +104,7 @@ final class HypixelAuctions {
     }
 
     private volatile long nextSaleRequestAt;
-    private volatile PricingView pricing = new PricingView(Map.of(), Map.of(), Set.of(), null);
+    private volatile PricingView pricing = new PricingView(Map.of(), Map.of(), Set.of(), Set.of(), null);
     private volatile long lastActiveRequest;
     private volatile long salesCheckedAt;
     private volatile String listingError = "";
@@ -163,7 +185,7 @@ final class HypixelAuctions {
     private void publishSales(long now) throws IOException {
         var sales = database.readSales(now);
         saleCount = sales.count();
-        pricing = new PricingView(sales.prices(), sales.unitPrices(), sales.sold(), pricing.snapshot());
+        pricing = new PricingView(sales.prices(), sales.unitPrices(), sales.sold(), sales.auctionItemIds(), pricing.snapshot());
     }
 
     Scan scan(FlipSettings settings) throws IOException, InterruptedException {
@@ -273,7 +295,7 @@ final class HypixelAuctions {
             }
         }
         var snapshot = new Snapshot(updated, FlipMarket.indexListings(listings.values()), Map.copyOf(listings));
-        pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.sold(), snapshot);
+        pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.sold(), pricing.auctionItemIds(), snapshot);
         listingError = "";
         return snapshot;
     }
@@ -348,6 +370,16 @@ final class HypixelAuctions {
         return Optional.of(new Item(count, attributes));
     }
 
+    boolean hasAuctionEvidence(String itemId, long now) {
+        var view = pricing;
+        if (view.auctionItemIds().contains(itemId)) {
+            return true;
+        }
+        var snapshot = view.snapshot();
+        return snapshot != null && snapshot.isCurrent(now) && snapshot.byItem().keySet().stream()
+                .anyMatch(item -> item.marketId().equals(itemId));
+    }
+
     boolean canOpenAuction(String id, long now) {
         var view = pricing;
         var snapshot = view.snapshot();
@@ -387,6 +419,10 @@ final class HypixelAuctions {
     }
 
     private JsonObject fetch(String resource) throws IOException, InterruptedException {
+        return fetchApi("skyblock/" + resource);
+    }
+
+    JsonObject fetchApi(String resource) throws IOException, InterruptedException {
         if (System.currentTimeMillis() < requestBackoffUntil.get()) {
             throw new IOException("Waiting for Hypixel's auction API rate limit.");
         }

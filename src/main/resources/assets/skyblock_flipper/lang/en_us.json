@@ -1,4 +1,5 @@
 {
   "key.category.skyblock_flipper.keys": "SkyBlock Flipper",
-  "key.skyblock_flipper.latest": "Open latest auction"
+  "key.skyblock_flipper.latest": "Open latest auction",
+  "key.skyblock_flipper.market_lookup": "Search hovered item market"
 }

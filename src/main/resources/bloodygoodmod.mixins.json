@@ -4,6 +4,8 @@
   "compatibilityLevel": "JAVA_25",
   "client": [
     "CursorPositionMixin",
+    "HoveredSlotAccess",
+    "MarketLookupKeyMixin",
     "MousePositionAccess",
     "MouseReleaseMixin",
     "TooltipMixin",
