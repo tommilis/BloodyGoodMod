@@ -52,6 +52,43 @@ final class HypixelAuctions {
     private static final int MAX_PAGES = 200;
     private static final int MAX_ITEM_BYTES = 256 * 1024;
 
+    private static final JsonObject PET_LEVELS = readPetLevels();
+
+    private static JsonObject readPetLevels() {
+        try (var stream = HypixelAuctions.class.getResourceAsStream("/market/pet-levels.json")) {
+            return JsonParser.parseReader(new InputStreamReader(java.util.Objects.requireNonNull(stream), StandardCharsets.UTF_8)).getAsJsonObject();
+        } catch (IOException | RuntimeException failure) {
+            LOGGER.warn("Pet level tables unavailable", failure);
+            return new JsonObject();
+        }
+    }
+
+    private static void bucketPetLevel(JsonObject info) {
+        if (!info.has("type") || !info.has("tier") || !info.has("exp") || !PET_LEVELS.has("pet_levels")) return;
+        String type = info.get("type").getAsString();
+        String tier = info.get("tier").getAsString();
+        var custom = PET_LEVELS.getAsJsonObject("custom_pet_leveling").getAsJsonObject(type);
+        if (custom != null && custom.has("xp_multiplier")) return;
+        var offsets = custom != null && custom.has("rarity_offset") ? custom.getAsJsonObject("rarity_offset") : PET_LEVELS.getAsJsonObject("pet_rarity_offset");
+        if (!offsets.has(tier)) return;
+        int offset = offsets.get(tier).getAsInt();
+        int max = custom != null && custom.has("max_level") ? custom.get("max_level").getAsInt() : 100;
+        double xp = info.get("exp").getAsDouble();
+        if (!Double.isFinite(xp) || xp < 0) return;
+        var levels = PET_LEVELS.getAsJsonArray("pet_levels");
+        int level = 1;
+        while (level < max) {
+            int index = offset + level - 1;
+            long cost = index < levels.size() ? levels.get(index).getAsLong()
+                    : custom.getAsJsonArray("pet_levels").get(index - levels.size()).getAsLong();
+            if (xp < cost) break;
+            xp -= cost;
+            level++;
+        }
+        info.remove("exp");
+        info.addProperty("bgmLevel", level == 1 || level == max ? level : Math.max(2, level / 10 * 10));
+    }
+
     record Item(int count, CompoundTag attributes) {
         String marketId() {
             String id = attributes.getStringOr("id", "");
@@ -76,9 +113,25 @@ final class HypixelAuctions {
         }
 
         Item pricingKey() {
-            if (!attributes.getStringOr("id", "").equals("PET")) {
-                return this;
+            var comparable = attributes.copy();
+            comparable.remove("originTag");
+            comparable.remove("spawnedFor");
+            comparable.remove("anvil_uses");
+            comparable.remove("donated_museum");
+            String id = comparable.getStringOr("id", "");
+            if (id.equals("PULSE_RING") && comparable.contains("thunder_charge")) {
+                long charge = comparable.getLongOr("thunder_charge", 0);
+                comparable.putLong("thunder_charge", charge / 50_000 * 50_000);
             }
+            if (id.startsWith("FINAL_DESTINATION_") && comparable.contains("eman_kills")) {
+                long kills = comparable.getLongOr("eman_kills", 0);
+                long tier = 0;
+                for (int threshold : new int[]{50,100,150,250,500,1000,2500,5000,10000,25000,50000,100000,200000}) {
+                    if (kills >= threshold) tier = threshold;
+                }
+                comparable.putLong("eman_kills", tier);
+            }
+            if (!id.equals("PET")) return comparable.equals(attributes) ? this : new Item(count, comparable);
             String json = attributes.getStringOr("petInfo", "");
             try {
                 var info = JsonParser.parseString(json).getAsJsonObject();
@@ -86,16 +139,17 @@ final class HypixelAuctions {
                 info.remove("uuid");
                 info.remove("active");
                 info.remove("hideInfo");
+                info.remove("candyUsed");
+                bucketPetLevel(info);
                 var sorted = new JsonObject();
                 new java.util.TreeMap<>(info.asMap()).forEach(sorted::add);
                 String normalized = sorted.toString();
-                if (normalized.equals(json)) {
+                if (normalized.equals(json) && comparable.equals(attributes)) {
                     return this;
                 }
-                var copy = attributes.copy();
-                copy.putString("petInfo", normalized);
-                return new Item(count, copy);
-            } catch (IllegalStateException | JsonParseException invalidPet) {
+                comparable.putString("petInfo", normalized);
+                return new Item(count, comparable);
+            } catch (RuntimeException invalidPet) {
                 return this;
             }
         }
@@ -178,6 +232,7 @@ final class HypixelAuctions {
         nextSaleRequestAt = System.currentTimeMillis() + SAMPLE_INTERVAL_MS;
 
         List<FlipMarket.Sale<Item>> incoming = new ArrayList<>();
+        var events = new ArrayList<AuctionDatabase.SaleEvent>();
         JsonArray rows;
         try {
             rows = auctions(fetch("auctions_ended"));
@@ -195,13 +250,22 @@ final class HypixelAuctions {
             if (price <= 0) {
                 continue;
             }
-            itemOf(sale).ifPresent(item -> incoming.add(new FlipMarket.Sale<>(
-                    sale.get("auction_id").getAsString().toLowerCase(Locale.ROOT), item, price,
-                    sale.get("timestamp").getAsLong())));
+            itemOf(sale, true).ifPresent(raw -> {
+                var attributes = raw.attributes();
+                String uuid = attributes.getStringOr("uuid", "");
+                attributes.remove("uuid");
+                attributes.remove("timestamp");
+                String auction = sale.get("auction_id").getAsString().replace("-", "").toLowerCase(Locale.ROOT);
+                long time = sale.get("timestamp").getAsLong();
+                incoming.add(new FlipMarket.Sale<>(auction, raw, price, time));
+                events.add(new AuctionDatabase.SaleEvent(auction, AuctionDatabase.variantKey(raw.pricingKey()), uuid,
+                        sale.get("buyer").getAsString().replace("-", ""), sale.has("seller") ? sale.get("seller").getAsString().replace("-", "") : "", price, time));
+            });
         }
         long sampledAt = System.currentTimeMillis();
         try {
             int added = database.updateSales(incoming, sampledAt);
+            database.observe(events);
             publishSales(sampledAt);
             salesCheckedAt = sampledAt;
             salesError = "";
@@ -215,30 +279,89 @@ final class HypixelAuctions {
     private void publishSales(long now) throws IOException {
         var sales = database.readSales(now);
         saleCount = sales.count();
+        if (guardUntil <= now) {
+            var considered = new HashSet<String>();
+            var dropping = new HashSet<String>();
+            sales.prices().forEach((item, price) -> {
+                if (price.sales() >= 12 && price.recentSalePrice() >= 10_000_000
+                        && now - price.latestSaleAt() <= Duration.ofHours(2).toMillis()) {
+                    considered.add(item.marketId());
+                    if (price.recentMedian() < price.recentSalePrice() * 0.75) dropping.add(item.marketId());
+                }
+            });
+            if (dropping.size() >= 5 && dropping.size() * 3 >= considered.size()) guardUntil = now + Duration.ofHours(48).toMillis();
+        }
         pricing = new PricingView(sales.prices(), sales.unitPrices(), sales.stackSales(), sales.sold(), sales.auctionItemIds(), pricing.snapshot());
     }
 
+    private volatile Snapshot preview;
+    private Map<String, Long> npcPrices = Map.of();
+    private long nextNpcRefresh;
+    volatile long guardUntil;
+    volatile long purse = Long.MAX_VALUE;
+
+    private void refreshNpc(long now) throws InterruptedException {
+        if (now < nextNpcRefresh) return;
+        nextNpcRefresh = now + 60_000;
+        try {
+            Map<String, Long> prices = new java.util.HashMap<>();
+            for (var row : fetchApi("resources/skyblock/items").getAsJsonArray("items")) {
+                var item = row.getAsJsonObject();
+                if (item.has("npc_sell_price")) prices.put(item.get("id").getAsString(), item.get("npc_sell_price").getAsLong());
+            }
+            npcPrices = Map.copyOf(prices);
+            nextNpcRefresh = now + Duration.ofHours(6).toMillis();
+        } catch (IOException | RuntimeException failure) {
+            LOGGER.debug("NPC prices unavailable", failure);
+        }
+    }
+
+    private long npcQuote(Item item) {
+        long price = npcPrices.getOrDefault(item.attributes().getStringOr("id", ""), 0L);
+        return price > 0 && price <= Long.MAX_VALUE / item.count() ? price * item.count() : 0;
+    }
+
     Scan scan(FlipSettings settings) throws IOException, InterruptedException {
+        return scan(settings, null);
+    }
+
+    Scan scan(FlipSettings settings, java.util.function.Consumer<Scan> early) throws IOException, InterruptedException {
         long started = System.nanoTime();
+        if (early == null || !historyLoaded) refreshMarketInputs();
+        Snapshot before = pricing.snapshot();
+        Snapshot active = activeSnapshot(early == null ? null : snapshot -> {
+            var ranked = rank(snapshot, settings, started);
+            var firstPage = preview.listingsById();
+            var fresh = ranked.candidates().stream()
+                    .filter(flip -> firstPage.containsKey(flip.id()) && !before.listingsById().containsKey(flip.id()))
+                    .toList();
+            early.accept(new Scan(ranked.snapshotTime(), saleCount, ranked.pricedItems(), ranked.elapsedMillis(), fresh));
+        });
+        if (early != null && active == before) return new Scan(active.time(), saleCount, 0, 0, List.of());
+        return rank(active, settings, started);
+    }
+
+    void refreshMarketInputs() throws InterruptedException {
         try {
             sample();
         } catch (IOException failure) {
             LOGGER.debug("Refreshing listings using the sales already on hand", failure);
         }
-        Snapshot active = activeSnapshot();
+        refreshNpc(System.currentTimeMillis());
+        refreshBonzoQuote(System.currentTimeMillis());
+    }
+
+    private Scan rank(Snapshot active, FlipSettings settings, long started) {
         long now = System.currentTimeMillis();
         var view = pricing;
         int pricedItems = (int) active.byItem().keySet().stream().filter(item -> comparablePrice(view, item, now) != null).count();
-        if (active.isCurrent(now) && active.byItem().keySet().stream()
-                .anyMatch(item -> isFraggedBonzo(item) && comparablePrice(view, item, now) != null)) {
-            refreshBonzoQuote(now);
-        }
         long valuationTime = System.currentTimeMillis();
         var candidates = active.isCurrent(valuationTime)
                 ? FlipMarket.rank(active.byItem(), item -> comparablePrice(view, item, valuationTime),
                         item -> replacementCost(active, view.sold(), item, valuationTime),
-                        item -> hasStackSales(item, view.stackSales()), view.sold(), settings, valuationTime)
+                        item -> hasStackSales(item, view.stackSales()), this::npcQuote, valuationTime < guardUntil, view.sold(), settings, valuationTime)
                 : List.<FlipMarket.Candidate>of();
+        candidates = candidates.stream().filter(f -> f.buy() <= purse).toList();
         return new Scan(active.time(), saleCount, pricedItems,
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), candidates);
     }
@@ -299,6 +422,10 @@ final class HypixelAuctions {
     }
 
     private Snapshot activeSnapshot() throws IOException, InterruptedException {
+        return activeSnapshot(null);
+    }
+
+    private Snapshot activeSnapshot(java.util.function.Consumer<Snapshot> early) throws IOException, InterruptedException {
         long now = System.currentTimeMillis();
         Snapshot cached = pricing.snapshot();
         long retryAt = listingRetryAt();
@@ -317,7 +444,7 @@ final class HypixelAuctions {
 
         lastActiveRequest = now;
         try {
-            return loadActiveSnapshot(cached);
+            return loadActiveSnapshot(cached, early);
         } catch (IOException failure) {
             listingError = failure.getMessage();
             throw failure;
@@ -327,7 +454,7 @@ final class HypixelAuctions {
         }
     }
 
-    private Snapshot loadActiveSnapshot(Snapshot cached) throws IOException, InterruptedException {
+    private Snapshot loadActiveSnapshot(Snapshot cached, java.util.function.Consumer<Snapshot> early) throws IOException, InterruptedException {
         JsonObject first = fetch("auctions?page=0");
         long updated = first.get("lastUpdated").getAsLong();
         long now = System.currentTimeMillis();
@@ -349,6 +476,13 @@ final class HypixelAuctions {
         var previousItems = cached == null ? Map.<String, FlipMarket.Listing<Item>>of() : cached.listingsById();
         var marketIds = new HashSet<String>();
         readListings(first, listings, marketIds, previousItems, now);
+        if (early != null && cached != null && cached.isCurrent(now)) {
+            var combined = new LinkedHashMap<>(cached.listingsById());
+            combined.putAll(listings);
+            var merged = new Snapshot(updated, FlipMarket.indexListings(combined.values()), Map.copyOf(combined), Set.of());
+            preview = new Snapshot(updated, Map.of(), Map.copyOf(listings), Set.of());
+            early.accept(merged);
+        }
         try (var workers = Executors.newFixedThreadPool(4)) {
             var completed = new ExecutorCompletionService<AuctionPage>(workers);
             var outstanding = new ArrayList<Future<AuctionPage>>();
@@ -392,6 +526,7 @@ final class HypixelAuctions {
         }
         var snapshot = new Snapshot(updated, FlipMarket.indexListings(listings.values()), Map.copyOf(listings), Set.copyOf(marketIds));
         pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.stackSales(), pricing.sold(), pricing.auctionItemIds(), snapshot);
+        preview = null;
         listingError = "";
         return snapshot;
     }
@@ -419,13 +554,15 @@ final class HypixelAuctions {
                     marketIds.add(marketId);
                 }
                 if (isTrue(auction, "bin") && auction.get("highest_bid_amount").getAsLong() == 0) {
-                    listings.putIfAbsent(id, new FlipMarket.Listing<>(id, item.pricingKey(), name, price, end));
+                    listings.putIfAbsent(id, new FlipMarket.Listing<>(id, item.pricingKey(), name, price, auction.get("start").getAsLong(), end));
                 }
             }
         }
     }
 
-    private static Optional<Item> itemOf(JsonObject auction) {
+    private static Optional<Item> itemOf(JsonObject auction) { return itemOf(auction, false); }
+
+    private static Optional<Item> itemOf(JsonObject auction, boolean retainIdentity) {
         try {
             JsonElement value = auction.get("item_bytes");
             String raw = value.isJsonObject() ? value.getAsJsonObject().get("data").getAsString()
@@ -446,7 +583,7 @@ final class HypixelAuctions {
                 count = stack.getIntOr("count", 1);
                 customData = stack.getCompoundOrEmpty("components").getCompoundOrEmpty("minecraft:custom_data");
             }
-            return itemKey(count, customData);
+            return itemKey(count, customData, retainIdentity);
         } catch (IOException | RuntimeException malformedItem) {
             // A malformed item has no reliable comparable. Continue with the rest of the page.
             return Optional.empty();
@@ -455,10 +592,10 @@ final class HypixelAuctions {
 
     static Optional<Item> itemOf(ItemStack stack) {
         var customData = stack.get(DataComponents.CUSTOM_DATA);
-        return customData == null ? Optional.empty() : itemKey(stack.getCount(), customData.copyTag());
+        return customData == null ? Optional.empty() : itemKey(stack.getCount(), customData.copyTag(), false);
     }
 
-    private static Optional<Item> itemKey(int count, CompoundTag data) {
+    private static Optional<Item> itemKey(int count, CompoundTag data, boolean retainIdentity) {
         CompoundTag attributes = data.getCompoundOrEmpty("ExtraAttributes");
         if (attributes.getStringOr("id", "").isBlank()) {
             attributes = data;
@@ -467,8 +604,10 @@ final class HypixelAuctions {
             return Optional.empty();
         }
         attributes = attributes.copy();
-        attributes.remove("uuid");
-        attributes.remove("timestamp");
+        if (!retainIdentity) {
+            attributes.remove("uuid");
+            attributes.remove("timestamp");
+        }
         return Optional.of(new Item(count, attributes));
     }
 
@@ -484,9 +623,19 @@ final class HypixelAuctions {
         return (snapshot == null || !snapshot.isCurrent(now)) && listingRefreshDue(now);
     }
 
+    String variantForAuction(String id) {
+        var active = pricing.snapshot();
+        var page = preview;
+        var listing = page == null ? null : page.listingsById().get(id);
+        if (listing == null && active != null) listing = active.listingsById().get(id);
+        return listing == null ? null : AuctionDatabase.variantKey(listing.item());
+    }
+
     boolean canOpenAuction(String id, long now) {
         var view = pricing;
         var snapshot = view.snapshot();
+        var page = preview;
+        if (page != null && page.isCurrent(now) && page.listingsById().containsKey(id)) snapshot = page;
         if (snapshot == null || !snapshot.isCurrent(now) || view.sold().contains(id)) {
             return false;
         }

@@ -66,6 +66,7 @@ public final class FlipperClient implements ClientModInitializer {
     private boolean auctionKeyHeld;
     private volatile ClientPacketListener activeConnection;
     private long nextScanAt;
+    private long announcedGuard;
     private boolean settingsRequested;
     private boolean historyRequested;
     private final Map<String, Long> alertedUntil = new HashMap<>();
@@ -82,9 +83,31 @@ public final class FlipperClient implements ClientModInitializer {
             LOGGER.warn("Could not read BloodyGoodMod settings", failure);
         }
 
+        try { auctions.guardUntil = Long.parseLong(java.nio.file.Files.readString(settingsPath.resolveSibling("bgm-update-until.txt")).strip()); } catch (IOException | NumberFormatException ignored) {}
         CursorResetSetting.enabled = settings.noCursorReset();
         TooltipScrolling.enabled = settings.scrollableTooltips();
         location.register();
+        net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            var client = Minecraft.getInstance();
+            if (overlay || client.player == null || location.connection(client) == null) return;
+            String line = message.getString().replaceAll("§.", "").strip();
+            var match = PURCHASE.matcher(line);
+            boolean purchase = match.matches();
+            if (!purchase) {
+                match = RESALE.matcher(line);
+                if (!match.matches()) return;
+            }
+            String name = match.group(1);
+            long amount;
+            try { amount = Long.parseLong(match.group(2).replace(",", "")); }
+            catch (NumberFormatException invalid) { return; }
+            String player = client.player.getUUID().toString().replace("-", "");
+            long now = System.currentTimeMillis();
+            worker.execute(() -> {
+                try { database.receipt(purchase, name, amount, player, now); }
+                catch (IOException failure) { LOGGER.debug("Could not save auction receipt", failure); }
+            });
+        });
         var rescueGuide = new RescueMissionGuide(location, () -> settings.rescueMission());
         rescueGuide.register();
 
@@ -131,6 +154,12 @@ public final class FlipperClient implements ClientModInitializer {
                                     rescueGuide.selectManualRoute(StringArgumentType.getString(command, "rank")));
                             return 1;
                         })))
+                        .then(literal("update").executes(command -> {
+                            auctions.guardUntil = System.currentTimeMillis() + Duration.ofHours(48).toMillis();
+                            try { java.nio.file.Files.writeString(settingsPath.resolveSibling("bgm-update-until.txt"), Long.toString(auctions.guardUntil)); } catch (IOException e) { LOGGER.warn("Could not persist update guard", e); }
+                            tell(command.getSource()::sendFeedback, "Price guard enabled for 48 hours.");
+                            return 1;
+                        }))
                         .then(literal("settings").executes(command -> {
                             settingsRequested = true;
                             return 1;
@@ -174,7 +203,8 @@ public final class FlipperClient implements ClientModInitializer {
         worker.execute(() -> {
             try {
                 var rows = database.recentFlips(System.currentTimeMillis());
-                client.execute(() -> history.loaded(rows, "No flips recorded yet."));
+                String summary = rows.isEmpty() ? "No flips recorded yet." : database.outcomeSummary(System.currentTimeMillis());
+                client.execute(() -> history.loaded(rows, summary));
             } catch (IOException failure) {
                 LOGGER.warn("Could not load flip history", failure);
                 client.execute(() -> history.loaded(List.of(), failure.getMessage()));
@@ -186,9 +216,13 @@ public final class FlipperClient implements ClientModInitializer {
         if (flips.isEmpty()) {
             return;
         }
+        var variants = new HashMap<String,String>();
+        flips.forEach(flip -> variants.put(flip.id(), auctions.variantForAuction(flip.id())));
+        var player = Minecraft.getInstance().player;
+        String uuid = player == null ? "" : player.getUUID().toString().replace("-", "");
         worker.execute(() -> {
             try {
-                database.recordFlips(flips, now);
+                database.recordFlips(flips, now, variants, uuid);
             } catch (IOException failure) {
                 LOGGER.warn("Could not record flip history", failure);
             }
@@ -233,6 +267,15 @@ public final class FlipperClient implements ClientModInitializer {
             }
         }
 
+        if (auctions.guardUntil > now && announcedGuard != auctions.guardUntil) {
+            announcedGuard = auctions.guardUntil;
+            tell(client.player::sendSystemMessage, "Price guard active for expensive flips.");
+            try {
+                java.nio.file.Files.writeString(settingsPath.resolveSibling("bgm-update-until.txt"), Long.toString(announcedGuard));
+            } catch (IOException failure) {
+                LOGGER.debug("Could not persist update guard", failure);
+            }
+        }
         boolean autoAlerts = settings.automatic();
         boolean needsListings = autoAlerts || auctionPriceOverlay.hasSelectedItem();
         if (!needsListings) {
@@ -246,6 +289,7 @@ public final class FlipperClient implements ClientModInitializer {
 
         FlipSettings scanSettings = settings;
         if (scanDue) {
+            auctions.purse = readPurse(client);
             nextScanAt = now + scanSettings.seconds() * 1000L;
         }
         worker.execute(() -> {
@@ -254,13 +298,17 @@ public final class FlipperClient implements ClientModInitializer {
                     return;
                 }
                 if (scanDue && autoAlerts) {
-                    var results = auctions.scan(scanSettings);
-                    client.execute(() -> {
+                    java.util.function.Consumer<HypixelAuctions.Scan> publish = results -> client.execute(() -> {
                         if (location.connection(client) == connection && activeConnection == connection
                                 && client.player != null && settings == scanSettings) {
                             alert(client.player::sendSystemMessage, results);
                         }
                     });
+                    try {
+                        publish.accept(auctions.scan(scanSettings, publish));
+                    } finally {
+                        auctions.refreshMarketInputs();
+                    }
                 } else if (scanDue) {
                     auctions.refreshListings();
                 } else {
@@ -276,8 +324,28 @@ public final class FlipperClient implements ClientModInitializer {
         });
     }
 
+    private static final java.util.regex.Pattern PURCHASE = java.util.regex.Pattern.compile("You purchased (.+?) for ([0-9,]+) coins!");
+    private static final java.util.regex.Pattern RESALE = java.util.regex.Pattern.compile("\\[Auction] .+? bought (.+?) for ([0-9,]+) coins[!.]?(?: CLICK)?");
+
+    private static final java.util.regex.Pattern PURSE = java.util.regex.Pattern.compile("(?i)(?:Purse|Piggy):\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)");
+
+    private static long readPurse(Minecraft client) {
+        if (client.level == null) return Long.MAX_VALUE;
+        var board = client.level.getScoreboard();
+        var sidebar = board.getDisplayObjective(net.minecraft.world.scores.DisplaySlot.SIDEBAR);
+        if (sidebar == null) return Long.MAX_VALUE;
+        for (var row : board.listPlayerScores(sidebar)) {
+            var team = board.getPlayersTeam(row.owner());
+            var text = net.minecraft.world.scores.PlayerTeam.formatNameForTeam(team, row.ownerName());
+            var match = PURSE.matcher(text.getString().replaceAll("§.", ""));
+            if (match.find()) return (long) Double.parseDouble(match.group(1).replace(",", ""));
+        }
+        return Long.MAX_VALUE;
+    }
+
     private int showStatus(FabricClientCommandSource source) {
         var status = auctions.status();
+        if (System.currentTimeMillis() < auctions.guardUntil) tell(source::sendFeedback, "48-hour price guard active.");
         long now = System.currentTimeMillis();
         tell(source::sendFeedback, location.description(Minecraft.getInstance()) + " · Listing snapshot " + age(status.snapshotTime(), now)
                 + " · Last sales check " + age(status.salesCheckedAt(), now)
@@ -307,10 +375,11 @@ public final class FlipperClient implements ClientModInitializer {
         return scan(source, new FlipSettings(settings.automatic(), settings.seconds(),
                 settings.minPrice(), budget, minProfit, settings.alertPosition(), settings.noCursorReset(),
                 settings.scrollableTooltips(), settings.rescueMission(), settings.minRoi(),
-                settings.minComparableSales()));
+                settings.minComparableSales(), settings.maxListingMinutes()));
     }
 
     private int scan(FabricClientCommandSource source, FlipSettings scanSettings) {
+        auctions.purse = readPurse(Minecraft.getInstance());
         return submit(source, "Checking Auction House prices…", () -> {
             var results = auctions.scan(scanSettings);
             return recipient -> showResults(recipient::sendFeedback, results);

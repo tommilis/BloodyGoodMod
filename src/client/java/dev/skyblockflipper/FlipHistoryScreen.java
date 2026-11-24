@@ -15,7 +15,7 @@ import java.util.Locale;
 final class FlipHistoryScreen extends Screen {
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.US)
             .withZone(ZoneId.systemDefault());
-    private static final int ROW_HEIGHT = 27;
+    private static final int ROW_HEIGHT = 42;
     private final Screen parent;
     private List<AuctionDatabase.SeenFlip> flips = List.of();
     private String status = "Loading…";
@@ -46,7 +46,7 @@ final class FlipHistoryScreen extends Screen {
         int bottom = height - 35;
         graphics.fill(left, 8, left + panelWidth, bottom, 0xF0181818);
         graphics.centeredText(font, title, width / 2, 16, 0xFFFFFFFF);
-        graphics.centeredText(font, "Detected opportunities · Estimated profit", width / 2, 29, 0xFFAAAAAA);
+        graphics.centeredText(font, flips.isEmpty() ? "Detected opportunities" : status, width / 2, 29, 0xFFAAAAAA);
         if (flips.isEmpty()) {
             graphics.centeredText(font, status, width / 2, 52, 0xFFCCCCCC);
             return;
@@ -67,6 +67,7 @@ final class FlipHistoryScreen extends Screen {
                     + "   Profit +" + coins(flip.profit());
             graphics.text(font, font.plainSubstrByWidth(details, panelWidth - 20),
                     left + 10, y + 15, 0xFF9BEBA3);
+            graphics.text(font, font.plainSubstrByWidth(entry.outcome(), panelWidth - 20), left + 10, y + 28, 0xFFBBBBBB);
         }
     }
 

@@ -63,8 +63,8 @@ final class AuctionPriceOverlay {
             suggestedText = "Suggested price: not enough recent sales";
         } else {
             String label = estimate.lowestBin() > 0 ? "Suggested price: " : "Recent sale estimate: ";
-            suggestedText = label + coins(estimate.suggestedCoins()) + " coins (" + estimate.sales()
-                    + (estimate.perUnit() ? " per-item comps)" : " observed sales)");
+            suggestedText = label + coins(estimate.suggestedCoins()) + " coins (" + (estimate.sales() == FlipMarket.MAX_COMPARABLE_SALES ? "64+" : estimate.sales())
+                    + (estimate.perUnit() ? " per-item sales / 24h)" : " sales / 24h)");
         }
     }
 

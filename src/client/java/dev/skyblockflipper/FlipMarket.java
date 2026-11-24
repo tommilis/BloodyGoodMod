@@ -16,8 +16,8 @@ final class FlipMarket {
     static final int MAX_COMPARABLE_SALES = 64;
 
     record Sale<K>(String id, K item, long price, long soldAt) {}
-    record Listing<K>(String id, K item, String name, long price, long endsAt) {}
-    enum Method { SALES, UNIT_SALES, HISTORY }
+    record Listing<K>(String id, K item, String name, long price, long startedAt, long endsAt) {}
+    enum Method { SALES, UNIT_SALES, NPC, HISTORY }
 
     record Candidate(String id, String name, long buy, long resale, long profit, int sales, long endsAt,
                      Method method, long latestSaleAt, int competingBins, long lowestCompetingBin, long replacementCost) {
@@ -37,12 +37,13 @@ final class FlipMarket {
             return switch (method) {
                 case SALES -> "Comparable sales";
                 case UNIT_SALES -> "Comparable sales per item";
+                case NPC -> "Sell to NPC";
                 case HISTORY -> "Recorded estimate";
             };
         }
     }
 
-    record Price(long recentSalePrice, int sales, long validUntil, long latestSaleAt, boolean perUnit) {
+    record Price(long recentSalePrice, int sales, long validUntil, long latestSaleAt, boolean perUnit, long recentMedian) {
         boolean isCurrent(long now) {
             return now < validUntil;
         }
@@ -67,7 +68,7 @@ final class FlipMarket {
             }
         }
         return new Price(estimate, recent.size(), recent.getLast().soldAt() + PRICING_WINDOW_MS,
-                recent.getFirst().soldAt(), false);
+                recent.getFirst().soldAt(), false, recent.stream().limit(5).mapToLong(Sale::price).sorted().toArray()[(Math.min(5, recent.size())-1)/2]);
     }
 
     private static double weight(Sale<?> sale, long now) {
@@ -84,7 +85,7 @@ final class FlipMarket {
         if (unit == null || !unit.isCurrent(now) || unit.recentSalePrice() > Long.MAX_VALUE / count) {
             return null;
         }
-        return new Price(unit.recentSalePrice() * count, unit.sales(), unit.validUntil(), unit.latestSaleAt(), true);
+        return new Price(unit.recentSalePrice() * count, unit.sales(), unit.validUntil(), unit.latestSaleAt(), true, Math.min(unit.recentMedian(), Long.MAX_VALUE / count) * count);
     }
 
     static <K> Map<K, List<Listing<K>>> indexListings(Iterable<Listing<K>> listings) {
@@ -109,7 +110,7 @@ final class FlipMarket {
     }
 
     static long resale(Price price, long competingBin) {
-        return competingBin > 1 ? Math.min(price.recentSalePrice(), competingBin - 1)
+        return competingBin > 1 ? Math.min(price.recentSalePrice(), percentOf(competingBin, 99))
                 : Math.min(price.recentSalePrice(), competingBin);
     }
 
@@ -126,11 +127,18 @@ final class FlipMarket {
                                     java.util.function.Function<K, Price> priceFor,
                                     java.util.function.ToLongFunction<K> replacementFor,
                                     java.util.function.Predicate<K> hasStackSales,
-                                    Set<String> sold, FlipSettings settings, long now) {
+                                    java.util.function.ToLongFunction<K> npcQuote, boolean updateGuard, Set<String> sold, FlipSettings settings, long now) {
         List<Candidate> candidates = new ArrayList<>();
         for (var group : byItem.entrySet()) {
             var listing = lowestBin(group.getValue(), sold, null, now);
-            if (listing == null || listing.price() < settings.minPrice() || listing.price() > settings.maxPrice()) {
+            if (listing == null || listing.startedAt() <= 0 || listing.startedAt() > now || now - listing.startedAt() > Duration.ofMinutes(settings.maxListingMinutes()).toMillis() || listing.price() < settings.minPrice() || listing.price() > settings.maxPrice()) {
+                continue;
+            }
+            long npc = npcQuote.applyAsLong(group.getKey());
+            long npcProfit = npc - listing.price();
+            if (npcProfit >= Math.max(1, settings.minProfit()) && npcProfit * 100.0 / listing.price() >= settings.minRoi()) {
+                candidates.add(new Candidate(listing.id(), listing.name(), listing.price(), npc, npcProfit, 0,
+                        listing.endsAt(), Method.NPC, 0, 0, 0, 0));
                 continue;
             }
             int competingBins = 0;
@@ -155,10 +163,13 @@ final class FlipMarket {
 
             long replacement = replacementFor.applyAsLong(group.getKey());
             long resale = Math.min(Math.min(price.recentSalePrice(), percentOf(competingBin, 99)), replacement);
+            if (updateGuard && resale >= 10_000_000) resale = Math.min(resale, price.recentMedian());
             if (resale <= listing.price()) {
                 continue;
             }
             long profit = resale - listing.price() - estimatedFees(resale);
+            int required = settings.minComparableSales() > 0 ? settings.minComparableSales() : (profit >= 3_000_000 ? 6 : 12);
+            if (price.sales() < required) continue;
             if (profit > 0 && profit >= settings.minProfit()
                     && 100.0 * profit / listing.price() >= settings.minRoi()) {
                 Method method = price.perUnit() ? Method.UNIT_SALES : Method.SALES;

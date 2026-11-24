@@ -34,8 +34,10 @@ final class AuctionDatabase {
 
     record Sales(Map<HypixelAuctions.Item, FlipMarket.Price> prices, Map<HypixelAuctions.Item, FlipMarket.Price> unitPrices,
                  Map<HypixelAuctions.Item, Map<Integer, Integer>> stackSales, Set<String> sold, Set<String> auctionItemIds, int count) {}
-    record SeenFlip(FlipMarket.Candidate candidate, long seenAt) {}
+    record SeenFlip(FlipMarket.Candidate candidate, long seenAt, String outcome) {}
+    record SaleEvent(String auction, String variant, String itemUuid, String buyer, String seller, long price, long time) {}
 
+    private List<SaleEvent> lastBatch = List.of();
     private final Path path;
     private final SaleHistory legacy;
 
@@ -70,6 +72,14 @@ final class AuctionDatabase {
                         ends_at INTEGER NOT NULL, seen_at INTEGER NOT NULL
                     )""");
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS flips_recent ON flips(seen_at DESC)");
+            statement.executeUpdate("""
+                    CREATE TABLE IF NOT EXISTS flip_outcomes (
+                        id TEXT PRIMARY KEY REFERENCES flips(id) ON DELETE CASCADE,
+                        variant TEXT, method TEXT, player TEXT, sold_at INTEGER, buy_paid INTEGER,
+                        owned_uuid TEXT, target_at INTEGER, resale_paid INTEGER, resale_at INTEGER, chat_resale INTEGER
+                    )""");
+            statement.executeUpdate("CREATE INDEX IF NOT EXISTS outcome_variant ON flip_outcomes(variant)");
+            statement.executeUpdate("CREATE INDEX IF NOT EXISTS outcome_owned ON flip_outcomes(owned_uuid)");
             return connection;
         } catch (SQLException | RuntimeException failure) {
             try {
@@ -226,7 +236,7 @@ final class AuctionDatabase {
         }
     }
 
-    void recordFlips(List<FlipMarket.Candidate> flips, long now) throws IOException {
+    void recordFlips(List<FlipMarket.Candidate> flips, long now, Map<String,String> variants, String player) throws IOException {
         try (var connection = open()) {
             connection.setAutoCommit(false);
             try (var insert = connection.prepareStatement("INSERT OR IGNORE INTO flips VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
@@ -243,6 +253,16 @@ final class AuctionDatabase {
                 }
                 insert.executeBatch();
             }
+            try (var insert = connection.prepareStatement("INSERT OR IGNORE INTO flip_outcomes(id,variant,method,player) VALUES (?,?,?,?)")) {
+                for (var flip : flips) {
+                    insert.setString(1, flip.id());
+                    insert.setString(2, variants.get(flip.id()));
+                    insert.setString(3, flip.method().name());
+                    insert.setString(4, player);
+                    insert.addBatch();
+                }
+                insert.executeBatch();
+            }
             try (var expiration = connection.prepareStatement("DELETE FROM flips WHERE seen_at < ?")) {
                 expiration.setLong(1, now - FLIP_RETENTION);
                 expiration.executeUpdate();
@@ -251,22 +271,127 @@ final class AuctionDatabase {
         } catch (SQLException failure) {
             throw new IOException("Could not save flip history.", failure);
         }
+        var keys = new HashSet<>(variants.values());
+        applyEvents(lastBatch.stream().filter(event -> variants.containsKey(event.auction())
+                || keys.contains(event.variant())).toList());
+    }
+
+    void observe(List<SaleEvent> events) throws IOException {
+        lastBatch = events.stream().sorted(java.util.Comparator.comparingLong(SaleEvent::time)).toList();
+        applyEvents(lastBatch);
+    }
+
+    private void applyEvents(List<SaleEvent> events) throws IOException {
+        if (events.isEmpty()) return;
+        try (var connection = open();
+             var sold = connection.prepareStatement("""
+                     UPDATE flip_outcomes SET sold_at=?, buy_paid=CASE WHEN player=? THEN ? ELSE buy_paid END,
+                     owned_uuid=CASE WHEN player=? THEN NULLIF(?,'') END WHERE id=?
+                     """);
+             var target = connection.prepareStatement("""
+                     UPDATE flip_outcomes SET target_at=? WHERE variant=? AND target_at IS NULL AND method!='NPC'
+                     AND id!=? AND EXISTS (SELECT 1 FROM flips f WHERE f.id=flip_outcomes.id AND f.resale<=?
+                         AND f.seen_at < ? AND f.seen_at >= ?)
+                     """);
+             var resale = connection.prepareStatement("""
+                     UPDATE flip_outcomes SET resale_paid=?, resale_at=?, chat_resale=NULL WHERE owned_uuid=? AND player=?
+                     AND sold_at < ? AND (resale_at IS NULL OR chat_resale=1) AND id=(SELECT id FROM flip_outcomes
+                         WHERE owned_uuid=? AND player=? AND sold_at < ? ORDER BY sold_at DESC LIMIT 1)
+                     """)) {
+            connection.setAutoCommit(false);
+            for (var e : events) {
+                sold.setLong(1,e.time()); sold.setString(2,e.buyer()); sold.setLong(3,e.price());
+                sold.setString(4,e.buyer()); sold.setString(5,e.itemUuid()); sold.setString(6,e.auction()); sold.executeUpdate();
+                target.setLong(1,e.time()); target.setString(2,e.variant()); target.setString(3,e.auction());
+                target.setLong(4,e.price()); target.setLong(5,e.time()); target.setLong(6,e.time()-Duration.ofDays(1).toMillis());
+                target.executeUpdate();
+                if (!e.itemUuid().isBlank()) {
+                    resale.setLong(1,e.price()); resale.setLong(2,e.time()); resale.setString(3,e.itemUuid());
+                    resale.setString(4,e.seller()); resale.setLong(5,e.time()); resale.setString(6,e.itemUuid());
+                    resale.setString(7,e.seller()); resale.setLong(8,e.time()); resale.executeUpdate();
+                }
+            }
+            connection.commit();
+        } catch (SQLException failure) {
+            throw new IOException("Could not record auction outcomes", failure);
+        }
+    }
+
+    void receipt(boolean purchase, String name, long price, String player, long now) throws IOException {
+        String matching = purchase
+                ? "SELECT f.id FROM flips f JOIN flip_outcomes o USING(id) WHERE o.player=? AND f.name=? AND f.buy=? AND f.seen_at>=? AND f.ends_at>=?"
+                : "SELECT f.id FROM flips f JOIN flip_outcomes o USING(id) WHERE o.player=? AND f.name=? AND o.buy_paid IS NOT NULL AND o.resale_paid IS NULL";
+        try (var connection = open()) {
+            connection.setAutoCommit(false);
+            String id;
+            try (var q = connection.prepareStatement(matching)) {
+                q.setString(1, player);
+                q.setString(2, name);
+                if (purchase) {
+                    q.setLong(3, price);
+                    q.setLong(4, now - Duration.ofMinutes(5).toMillis());
+                    q.setLong(5, now);
+                }
+                try (var rows = q.executeQuery()) {
+                    if (!rows.next()) return;
+                    id = rows.getString(1);
+                    if (rows.next()) return;
+                }
+            }
+            String sql = purchase ? "UPDATE flip_outcomes SET buy_paid=?,sold_at=coalesce(sold_at,?) WHERE id=?"
+                    : "UPDATE flip_outcomes SET resale_paid=?,resale_at=?,chat_resale=1 WHERE id=?";
+            try (var q = connection.prepareStatement(sql)) {
+                q.setLong(1,price);
+                q.setLong(2,now);
+                q.setString(3,id);
+                q.executeUpdate();
+            }
+            connection.commit();
+        } catch (SQLException failure) { throw new IOException("Could not store auction receipt", failure); }
+    }
+
+    String outcomeSummary(long now) throws IOException {
+        try (var c = open(); var q = c.prepareStatement("""
+                SELECT sum(CASE WHEN sold_at < seen_at+7000 THEN 1 ELSE 0 END) AS missed,
+                       count(sold_at) AS observed,
+                       sum(CASE WHEN method!='NPC' AND seen_at<=? AND target_at IS NOT NULL THEN 1 ELSE 0 END) AS hits,
+                       sum(CASE WHEN method!='NPC' AND seen_at<=? THEN 1 ELSE 0 END) AS matured
+                FROM flips JOIN flip_outcomes USING(id)
+                """)) {
+            q.setLong(1,now-Duration.ofDays(1).toMillis());
+            q.setLong(2,now-Duration.ofDays(1).toMillis());
+            try (var r = q.executeQuery()) {
+                r.next();
+                return "Gone before 7s: " + r.getInt("missed") + "/" + r.getInt("observed")
+                        + " observed sales · 24h target hits: " + r.getInt("hits") + "/" + r.getInt("matured");
+            }
+        } catch (SQLException failure) { throw new IOException("Could not read outcome totals", failure); }
     }
 
     List<SeenFlip> recentFlips(long now) throws IOException {
         try (var connection = open();
              var query = connection.prepareStatement("""
-                     SELECT * FROM flips WHERE seen_at >= ? AND samples >= ?
+                     SELECT f.*, o.sold_at, o.target_at, o.buy_paid, o.resale_paid, o.chat_resale, o.method FROM flips f LEFT JOIN flip_outcomes o ON o.id=f.id WHERE seen_at >= ?
                      ORDER BY seen_at DESC, profit DESC, id LIMIT 100
                      """)) {
             query.setLong(1, now - FLIP_RETENTION);
-            query.setInt(2, FlipMarket.MIN_SALES);
+
             var flips = new ArrayList<SeenFlip>();
             try (var rows = query.executeQuery()) {
                 while (rows.next()) {
+                    long delay = Math.floorDiv(rows.getLong("sold_at") - rows.getLong("seen_at"), 1000);
+                    String outcome = rows.getObject("sold_at") == null ? "Sale unobserved" :
+                            delay < 0 ? "Sold before alert" : "Sold " + delay + "s after alert";
+                    if (rows.getObject("target_at") != null) outcome += " · comparable reached target";
+                    if (rows.getObject("buy_paid") != null) outcome += " · bought by you";
+                    if (rows.getObject("resale_paid") != null) {
+                        long received = rows.getLong("resale_paid");
+                        outcome += (rows.getInt("chat_resale") == 1 ? " · possible resale (chat) ~" : " · resale profit ~") + (received - FlipMarket.estimatedFees(received) - rows.getLong("buy_paid"));
+                    }
+                    if ("NPC".equals(rows.getString("method"))) outcome = "NPC exit · " + outcome;
                     flips.add(new SeenFlip(new FlipMarket.Candidate(rows.getString("id"), rows.getString("name"),
                             rows.getLong("buy"), rows.getLong("resale"), rows.getLong("profit"),
-                            rows.getInt("samples"), rows.getLong("ends_at")), rows.getLong("seen_at")));
+                            rows.getInt("samples"), rows.getLong("ends_at")), rows.getLong("seen_at"), outcome));
                 }
             }
             return List.copyOf(flips);
@@ -275,7 +400,7 @@ final class AuctionDatabase {
         }
     }
 
-    private static String variantKey(HypixelAuctions.Item item) {
+    static String variantKey(HypixelAuctions.Item item) {
         try {
             var digest = MessageDigest.getInstance("SHA-256");
             addString(digest, Integer.toString(item.count()));

@@ -59,7 +59,7 @@ final class FlipSettingsScreen extends Screen {
                 settings.maxPrice() == Long.MAX_VALUE ? "" : Long.toString(settings.maxPrice()),
                 Long.toString(settings.minProfit()),
                 Integer.toString(settings.minRoi()),
-                Integer.toString(settings.minComparableSales())
+                Integer.toString(settings.minComparableSales()), Integer.toString(settings.maxListingMinutes())
         };
     }
 
@@ -81,6 +81,7 @@ final class FlipSettingsScreen extends Screen {
             addAuctionWidgets();
         } else if (tab == Tab.FILTERS) {
             addFilterField(4, "Minimum ROI (%)", 25);
+            addFilterField(6, "Maximum age (minutes)", 78);
             addFilterField(5, "Minimum observed sales", 50);
         } else {
             addRenderableWidget(Button.builder(cursorLabel(), button -> {
@@ -180,12 +181,13 @@ final class FlipSettingsScreen extends Screen {
             }
             drawLabel(graphics, "Latest auction key", top + 138,
                     contentWidth - Math.min(97, contentWidth / 3) - 53);
-            hint = "Interval 10–3600s · Blank max = unlimited";
+            hint = "Page 0 poll 3–3600s · Blank max = unlimited";
         } else if (tab == Tab.FILTERS) {
             int labelWidth = contentWidth - Math.min(92, contentWidth / 3) - 4;
             drawLabel(graphics, "Minimum ROI (%)", top + 30, labelWidth);
             drawLabel(graphics, "Minimum observed sales", top + 55, labelWidth);
-            drawLabel(graphics, "Flips require at least three completed sales.", top + 82, contentWidth);
+            drawLabel(graphics, "Maximum age (minutes)", top + 83, labelWidth);
+            drawLabel(graphics, "0 = 12 sales, or 6 for 3M+ profit.", top + 108, contentWidth);
             hint = "";
         } else {
             drawLabel(graphics, "Keep the cursor in place when you move", top + 51, contentWidth);
@@ -261,7 +263,7 @@ final class FlipSettingsScreen extends Screen {
                     values[1].isEmpty() ? 0 : Long.parseLong(values[1]),
                     values[2].isEmpty() ? Long.MAX_VALUE : Long.parseLong(values[2]),
                     values[3].isEmpty() ? 0 : Long.parseLong(values[3]), position, noCursorReset, scrollableTooltips,
-                    rescueMission, Integer.parseInt(values[4]), Integer.parseInt(values[5]));
+                    rescueMission, Integer.parseInt(values[4]), Integer.parseInt(values[5]), Integer.parseInt(values[6]));
             saveSettings.save(settings, key);
             onClose();
         } catch (NumberFormatException invalidNumber) {

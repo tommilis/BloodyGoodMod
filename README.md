@@ -5,15 +5,15 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.7.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.14.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 
 ## Automatic alerts and settings
 
-The mod checks for flips at your chosen interval while the Hypixel Mod API reports you are in SkyBlock. The default is 60 seconds. It shows up to five new matching listings per scan in chat, ordered by estimated profit, and skips listings it has already shown on that connection.
+The mod checks for flips at your chosen interval while the Hypixel Mod API reports you are in SkyBlock. The default is 3 seconds. It shows up to five new matching listings per scan in chat, ordered by estimated profit, and skips listings it has already shown on that connection.
 
-Open `/bgm` to turn automatic alerts on or off, set the scan interval (10–3600 seconds), set the minimum and maximum buy price and minimum estimated profit, and bind a key for the latest result. Leave maximum price blank for no cap. Use the Alert position button to cycle through six placements and preview them. Click Save to apply the position. Sales sampling runs about once a minute while connected, including when alerts are off.
+Open `/bgm` to turn automatic alerts on or off, set the scan interval (3–3600 seconds), set the minimum and maximum buy price and minimum estimated profit, and bind a key for the latest result. Leave maximum price blank for no cap. Use the Alert position button to cycle through six placements and preview them. Click Save to apply the position. Sales sampling runs about once a minute while connected, including when alerts are off.
 
 Open chat and click a flip to open that listing directly, or press your configured key while playing to open the most recent flip if it still appears available in the latest usable snapshot. The key starts unbound. Each input submits a single `/viewauction` command. You still choose whether to buy. The alert shows estimated profit and return on the buy price. Hover for buy price, estimated resale, and comparable sales. Hypixel's [Allowed Modifications guide](https://support.hypixel.net/hc/en-us/articles/6472550754962-Hypixel-Allowed-Modifications) does not expressly approve auction flip alerts or a direct auction hotkey.
 
@@ -52,6 +52,7 @@ Route data and approaches are derived from [SkyHanni-REPO](https://github.com/Sk
 | Command | Result |
 | --- | --- |
 | `/bgm` | Open settings. |
+| `/bgm update` | Enable the high-value price shock guard for 48 hours. |
 | `/bgm history` | Open the latest detected flip opportunities. |
 | `/bgm status` | Show the SkyBlock area, listing snapshot age, last successful sales check, any recent API errors, and the rate-limit countdown when applicable. |
 | `/bgm scan` | Collect a sales sample, then show up to five BIN flips ranked by estimated profit and pricing evidence. |
@@ -64,7 +65,9 @@ Route data and approaches are derived from [SkyHanni-REPO](https://github.com/Sk
 - While connected to Hypixel, the mod samples completed BIN sales about once a minute. It keeps every observed sale it records in `config/bloodygoodmod-auctions.sqlite` and imports eligible records from the previous `config/skyblock-flipper-sales.nbt` on first use. SQLite supplies recent comparable sales for pricing. A new install starts with the sales it can observe after connecting. The number shown in each result counts observed comparable sales, so it is not a measure of total market volume.
 - Sales-based prices need at least three observed sales in the past 24 hours. Pricing uses a lower quartile of up to 64 sales, with newer sales weighted more heavily. Plain items can use per-item pricing across stack sizes. A flip alert for a stack using this fallback requires five observed sales of stacks at least as large in the past 24 hours. Pricing preserves upgrades and unknown attributes. Pet comparisons ignore the pet UUID and the active and tooltip visibility flags.
 - Estimated resale is capped just below the lowest equivalent competing BIN in a snapshot at most two minutes old. Estimated profit subtracts the purchase cost, listing fee and standard collection tax. Duration surcharges and special event modifiers are excluded.
-- In **Filters**, set minimum ROI and observed sales. Flip alerts require completed sales and a buy price at least 10% below the next available BIN. The resale estimate is capped at 99% of that BIN and at the verified replacement cost where available. Hover an alert for its comparable sales, competing BINs, and replacement cost when used. Fragged Bonzo’s Staff requires a comparable base staff and a fresh Bazaar quote for eight fragments.
+- In **Filters**, set minimum ROI and observed sales. With the observed-sales filter at zero, AH alerts require 12 comparable sales, or six for at least 3M estimated net profit. AH alerts require completed sales and a buy price at least 10% below the next available BIN. The resale estimate is capped at 99% of that BIN and at the verified replacement cost where available. Hover an alert for its comparable sales, competing BINs, and replacement cost when used. Fragged Bonzo’s Staff requires a comparable base staff and a fresh Bazaar quote for eight fragments.
+- The maximum listing age defaults to three minutes. Alerts respect the visible purse balance. If an NPC pays more than the BIN, the mod can flag the direct vendor profit without comparable sales. On a new snapshot the mod checks newly seen first-page listings against cached competition while the other pages download.
+- The guard caps estimates of 10M and above at the recent median. It can activate automatically when several expensive items fall sharply. History records observed sale timing, comparable sales reaching the target within 24 hours, and matched purchases and resales. A name-only resale chat match is marked as possible. Market activity while disconnected can be missed.
 - The client reuses sales and active listing data between requests. The scanner downloads additional listing pages only when Hypixel publishes a new snapshot and reuses decoded item data for listing IDs it has seen before. A complete scan can run longer than the configured interval. Manual scans report the time taken and the age of the listing snapshot. If a listing page fails or the snapshot changes mid-scan, the mod cancels the remaining page requests and keeps the last complete snapshot. Listings may already have sold by the time you open them in-game.
 
 [Hypixel Public API](https://api.hypixel.net/#tag/SkyBlock) · [Auction House fees](https://hypixelskyblock.minecraft.wiki/w/Auction_House#Fees_and_Taxes) · [Fabric for Minecraft 26.2](https://fabricmc.net/2026/06/15/262.html)
