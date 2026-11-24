@@ -16,9 +16,7 @@ abstract class TooltipMixin {
     @Shadow public abstract int guiHeight();
 
     @ModifyVariable(method = "tooltip", at = @At("HEAD"), argsOnly = true, ordinal = 0)
-    private List<ClientTooltipComponent> bgm$fitLines(List<ClientTooltipComponent> lines,
-                                                     Font font, List<ClientTooltipComponent> original,
-                                                     int x, int y) {
-        return TooltipScrolling.fit(font, lines, x, y, guiHeight());
+    private List<ClientTooltipComponent> bgm$fitLines(List<ClientTooltipComponent> lines, Font font) {
+        return TooltipScrolling.fit(font, lines, guiHeight());
     }
 }
