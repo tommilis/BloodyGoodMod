@@ -75,6 +75,31 @@ final class HypixelAuctions {
             return id;
         }
 
+        Item pricingKey() {
+            if (!attributes.getStringOr("id", "").equals("PET")) {
+                return this;
+            }
+            String json = attributes.getStringOr("petInfo", "");
+            try {
+                var info = JsonParser.parseString(json).getAsJsonObject();
+                // Preserve progression, skins, held items and unknown fields.
+                info.remove("uuid");
+                info.remove("active");
+                info.remove("hideInfo");
+                var sorted = new JsonObject();
+                new java.util.TreeMap<>(info.asMap()).forEach(sorted::add);
+                String normalized = sorted.toString();
+                if (normalized.equals(json)) {
+                    return this;
+                }
+                var copy = attributes.copy();
+                copy.putString("petInfo", normalized);
+                return new Item(count, copy);
+            } catch (IllegalStateException | JsonParseException invalidPet) {
+                return this;
+            }
+        }
+
         Item unitKey() {
             // Keep every upgrade and unknown field significant. Only plain stacks share a unit price.
             return attributes.size() == 1 ? new Item(1, attributes) : null;
@@ -394,7 +419,7 @@ final class HypixelAuctions {
                     marketIds.add(marketId);
                 }
                 if (isTrue(auction, "bin") && auction.get("highest_bid_amount").getAsLong() == 0) {
-                    listings.putIfAbsent(id, new FlipMarket.Listing<>(id, item, name, price, end));
+                    listings.putIfAbsent(id, new FlipMarket.Listing<>(id, item.pricingKey(), name, price, end));
                 }
             }
         }
@@ -480,6 +505,7 @@ final class HypixelAuctions {
     }
 
     FlipMarket.ListingPrice listingPrice(Item item, long now) {
+        item = item.pricingKey();
         var view = pricing;
         var snapshot = view.snapshot();
         boolean fresh = snapshot != null && snapshot.isCurrent(now);

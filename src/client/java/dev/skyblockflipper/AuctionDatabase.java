@@ -28,7 +28,6 @@ import java.util.Properties;
 import java.util.Set;
 
 final class AuctionDatabase {
-    private static final long SALES_RETENTION = Duration.ofHours(24).toMillis();
     private static final long FLIP_RETENTION = Duration.ofDays(30).toMillis();
     // Any usable active snapshot is at most two minutes old.
     private static final long SOLD_LOOKBACK = Duration.ofMinutes(10).toMillis();
@@ -97,17 +96,6 @@ final class AuctionDatabase {
                 }
             }
             int added = insertSales(connection, incoming, now);
-            try (var expiration = connection.prepareStatement("DELETE FROM sales WHERE sold_at < ?")) {
-                expiration.setLong(1, now - SALES_RETENTION);
-                if (expiration.executeUpdate() > 0) {
-                    try (var statement = connection.createStatement()) {
-                        statement.executeUpdate("""
-                                DELETE FROM variants WHERE NOT EXISTS (
-                                    SELECT 1 FROM sales WHERE sales.variant = variants.variant
-                                )""");
-                    }
-                }
-            }
             connection.commit();
             return added;
         } catch (SQLException failure) {
@@ -122,7 +110,7 @@ final class AuctionDatabase {
         try (var variant = connection.prepareStatement("INSERT OR IGNORE INTO variants VALUES (?, ?, ?)");
              var sale = connection.prepareStatement("INSERT OR IGNORE INTO sales VALUES (?, ?, ?, ?)")) {
             for (var row : sales) {
-                if (row.soldAt() < now - SALES_RETENTION || row.soldAt() > now) {
+                if (row.soldAt() > now) {
                     continue;
                 }
                 var item = row.item();
@@ -149,7 +137,7 @@ final class AuctionDatabase {
 
     Sales readSales(long now) throws IOException {
         try (var connection = open()) {
-            var prices = new HashMap<HypixelAuctions.Item, FlipMarket.Price>();
+            var exactSales = new HashMap<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>>();
             var auctionItemIds = new HashSet<String>();
             var unitSales = new HashMap<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>>();
             try (var query = connection.prepareStatement("""
@@ -167,18 +155,15 @@ final class AuctionDatabase {
                 query.setLong(2, now);
                 query.setInt(3, FlipMarket.MAX_COMPARABLE_SALES);
                 try (var rows = query.executeQuery()) {
-                    var group = new ArrayList<FlipMarket.Sale<HypixelAuctions.Item>>();
                     String key = null;
                     HypixelAuctions.Item item = null;
                     while (rows.next()) {
                         String current = rows.getString("variant");
                         if (!current.equals(key)) {
-                            addPrice(prices, item, group, now);
-                            group.clear();
                             key = current;
                             var data = new ByteArrayInputStream(rows.getBytes("attributes"));
                             var attributes = NbtIo.readCompressed(data, NbtAccounter.create(4L * 1024 * 1024));
-                            item = new HypixelAuctions.Item(rows.getInt("item_count"), attributes);
+                            item = new HypixelAuctions.Item(rows.getInt("item_count"), attributes).pricingKey();
                             String itemId = item.marketId();
                             if (!itemId.isBlank()) {
                                 auctionItemIds.add(itemId);
@@ -186,23 +171,17 @@ final class AuctionDatabase {
                         }
                         var sale = new FlipMarket.Sale<>(rows.getString("id"), item,
                                 rows.getLong("price"), rows.getLong("sold_at"));
-                        group.add(sale);
+                        exactSales.computeIfAbsent(item, ignored -> new ArrayList<>()).add(sale);
                         var unit = item.unitKey();
                         if (unit != null && sale.price() >= item.count()) {
                             unitSales.computeIfAbsent(unit, ignored -> new ArrayList<>()).add(
                                     new FlipMarket.Sale<>(sale.id(), unit, sale.price() / item.count(), sale.soldAt()));
                         }
                     }
-                    addPrice(prices, item, group, now);
                 }
             }
-            var unitPrices = new HashMap<HypixelAuctions.Item, FlipMarket.Price>();
-            unitSales.forEach((item, sales) -> {
-                sales.sort(java.util.Comparator.comparingLong(
-                        (FlipMarket.Sale<HypixelAuctions.Item> sale) -> sale.soldAt()).reversed()
-                        .thenComparing(FlipMarket.Sale::id));
-                addPrice(unitPrices, item, sales.subList(0, Math.min(sales.size(), FlipMarket.MAX_COMPARABLE_SALES)), now);
-            });
+            var prices = priceGroups(exactSales, now);
+            var unitPrices = priceGroups(unitSales, now);
             var sold = new HashSet<String>();
             try (var query = connection.prepareStatement("SELECT id FROM sales WHERE sold_at >= ?")) {
                 query.setLong(1, now - SOLD_LOOKBACK);
@@ -219,6 +198,18 @@ final class AuctionDatabase {
         } catch (SQLException failure) {
             throw new IOException("Could not read the local sales database.", failure);
         }
+    }
+
+    private static Map<HypixelAuctions.Item, FlipMarket.Price> priceGroups(
+            Map<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>> groups, long now) {
+        var prices = new HashMap<HypixelAuctions.Item, FlipMarket.Price>();
+        groups.forEach((item, sales) -> {
+            sales.sort(java.util.Comparator.comparingLong(
+                    (FlipMarket.Sale<HypixelAuctions.Item> sale) -> sale.soldAt()).reversed()
+                    .thenComparing(FlipMarket.Sale::id));
+            addPrice(prices, item, sales.subList(0, Math.min(sales.size(), FlipMarket.MAX_COMPARABLE_SALES)), now);
+        });
+        return prices;
     }
 
     private static void addPrice(Map<HypixelAuctions.Item, FlipMarket.Price> prices, HypixelAuctions.Item item,
