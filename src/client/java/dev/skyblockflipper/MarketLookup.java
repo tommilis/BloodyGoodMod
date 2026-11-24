@@ -42,6 +42,7 @@ public final class MarketLookup {
     private final SkyBlockLocation location;
     private final HypixelAuctions auctions;
     private final Executor worker;
+    private final MarketHistory history = new MarketHistory();
     private Catalog catalog;
     private Pending pending;
     private long retryAt;
@@ -60,6 +61,10 @@ public final class MarketLookup {
             if (screen instanceof AbstractContainerScreen<?>) {
                 ScreenMouseEvents.allowMouseClick(screen).register(
                         (current, event) -> !key.matchesMouse(event) || !lookup(client));
+                long now = System.currentTimeMillis();
+                if (location.connection(client) != null && (catalog == null || now >= catalog.expiresAt())) {
+                    loadCatalog(client, now);
+                }
             }
         });
     }
@@ -101,12 +106,16 @@ public final class MarketLookup {
             return feedback(client, "Market data unavailable. Try again shortly.");
         }
         pending = request;
-        if (!loading) {
+        loadCatalog(client, now);
+        return feedback(client, "Loading market data. Keep hovering over the item.");
+    }
+
+    private void loadCatalog(Minecraft client, long now) {
+        if (!loading && now >= retryAt) {
             loading = true;
             retryAt = now + RETRY_MS;
             Thread.startVirtualThread(() -> refresh(client));
         }
-        return feedback(client, "Loading market data. Keep hovering over the item.");
     }
 
     private void refresh(Minecraft client) {
@@ -155,44 +164,62 @@ public final class MarketLookup {
         if (item != null && item.soulbound()) {
             return feedback(client, "This item is soulbound.");
         }
-        if (item != null && item.auctionBlocked() || query.auctionId().isEmpty()
-                || !auctions.needsAuctionEvidence(now)) {
+        if ((item != null && item.auctionBlocked()) || query.auctionId().isEmpty()) {
             return noMarket(client, query);
         }
         pending = request;
         if (!loading) {
             loading = true;
             worker.execute(() -> {
-                boolean refreshed = false;
-                try {
-                    auctions.refreshListings();
-                    refreshed = true;
-                } catch (InterruptedException failure) {
-                    Thread.currentThread().interrupt();
-                } catch (IOException | RuntimeException failure) {
-                    LOGGER.debug("Could not verify whether an item is auctionable", failure);
-                }
-                boolean completed = refreshed;
+                MarketHistory.Result result = auctionEvidence(query.auctionId(), now);
                 client.execute(() -> {
                     loading = false;
                     Pending latest = pending;
                     pending = null;
-                    if (latest != null && stillHovering(client, latest) && !open(client, latest, data)) {
-                        if (completed) {
-                            noMarket(client, latest.query());
-                        } else {
-                            feedback(client, "Auction data unavailable. Try again shortly.");
-                        }
+                    if (latest == null || !stillHovering(client, latest)) {
+                        return;
+                    }
+                    if (!query.auctionId().equals(latest.query().auctionId())) {
+                        openOrCheckAuctions(client, latest, data);
+                    } else if (!open(client, latest, data, result == MarketHistory.Result.SOLD ? query.auctionId() : "")) {
+                        reportAuctionResult(client, latest.query(), result);
                     }
                 });
             });
         }
-        return feedback(client, "Checking Auction House listings. Keep hovering over the item.");
+        return feedback(client, "Checking Auction House listings and sales. Keep hovering over the item.");
+    }
+
+    private MarketHistory.Result auctionEvidence(String auctionId, long now) {
+        try {
+            if (auctions.needsAuctionEvidence(now)) {
+                try {
+                    auctions.refreshListings();
+                } catch (IOException | RuntimeException failure) {
+                    LOGGER.debug("Could not refresh listings for market lookup", failure);
+                }
+            }
+            return auctions.hasAuctionEvidence(auctionId) ? MarketHistory.Result.SOLD : history.lookup(auctionId);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return MarketHistory.Result.UNAVAILABLE;
+        }
+    }
+
+    private static void reportAuctionResult(Minecraft client, Query query, MarketHistory.Result result) {
+        if (result == MarketHistory.Result.UNAVAILABLE) {
+            feedback(client, "Auction history unavailable for " + query.auctionId() + ". Try again shortly.");
+        } else {
+            noMarket(client, query);
+        }
     }
 
     private static boolean noMarket(Minecraft client, Query query) {
         if (query.itemId().equals("ENCHANTED_BOOK") && query.productId().isEmpty()) {
             return feedback(client, "Bazaar lookup needs a book with one readable enchantment.");
+        }
+        if (MarketVariants.isShard(query.itemId()) && query.productId().isEmpty()) {
+            return feedback(client, "Could not identify the Bazaar product for " + query.hoverName() + ".");
         }
         String id = query.productId().isEmpty() ? query.itemId() : query.productId();
         return feedback(client, "No verified Bazaar or Auction House market for " + id + ".");
@@ -204,7 +231,11 @@ public final class MarketLookup {
     }
 
     private boolean open(Minecraft client, Pending request, Catalog data) {
-        String command = route(data, request.query(), auctions::hasAuctionEvidence);
+        return open(client, request, data, "");
+    }
+
+    private boolean open(Minecraft client, Pending request, Catalog data, String confirmedAuctionId) {
+        String command = route(data, request.query(), id -> id.equals(confirmedAuctionId) || auctions.hasAuctionEvidence(id));
         if (command == null || !stillHovering(client, request)) {
             return false;
         }
@@ -227,8 +258,9 @@ public final class MarketLookup {
         if (item != null && item.auctionBlocked()) {
             return null;
         }
-        if ((item != null && item.auctionExplicit()) || !query.auctionId().isEmpty() && auctionEvidence.test(query.auctionId())) {
-            return command("ahsearch", item == null || !query.itemId().equals(query.auctionId()) ? query.hoverName() : item.name());
+        if (!query.auctionId().isEmpty() && ((item != null && item.auctionExplicit()) || auctionEvidence.test(query.auctionId()))) {
+            String name = item == null || !query.itemId().equals(query.auctionId()) ? query.hoverName() : item.name();
+            return command("ahsearch", baseName(name));
         }
         return null;
     }
@@ -285,6 +317,11 @@ public final class MarketLookup {
         CompoundTag attributes = item.attributes();
         String id = attributes.getStringOr("id", "");
         String name = baseName(stack.getHoverName().getString());
+        if (MarketVariants.isShard(id)) {
+            var shard = MarketVariants.shard(id, attributes, name);
+            return shard == null ? new Query(id, "", name, bound, "")
+                    : new Query(id, shard.productId(), shard.searchName(), bound, "");
+        }
         if (id.equals("ENCHANTED_BOOK")) {
             var enchantments = attributes.getCompoundOrEmpty("enchantments");
             if (enchantments.size() != 1) {
@@ -301,7 +338,7 @@ public final class MarketLookup {
             return new Query(id, product, name, bound, "");
         }
         String marketId = item.marketId();
-        if (marketId.startsWith("PET:")) {
+        if (marketId.startsWith("PET:") && name.isBlank()) {
             name = marketId.substring(4).replace('_', ' ');
         }
         return new Query(id, id, name, bound, marketId);
@@ -321,7 +358,8 @@ public final class MarketLookup {
 
     static String enchantmentSearch(String enchantment, int level, java.util.List<String> lore) {
         String key = enchantment.toLowerCase(Locale.ROOT);
-        String words = key.equals("ultimate_wise") ? "ultimate wise" : key.replaceFirst("^ultimate_", "").replace('_', ' ');
+        String words = key.equals("ultimate_wise") || key.equals("ultimate_jerry")
+                ? key.replace('_', ' ') : key.replaceFirst("^ultimate_", "").replace('_', ' ');
         String name = java.util.Arrays.stream(words.split(" "))
                 .filter(word -> !word.isEmpty())
                 .map(word -> Character.toUpperCase(word.charAt(0)) + word.substring(1))
@@ -345,7 +383,7 @@ public final class MarketLookup {
     }
 
     static String baseName(String name) {
-        return name.replaceAll("§.", "").replaceFirst("(?i)^\\[lvl \\d+\\]\\s*", "")
+        return name.replaceAll("§.", "").replaceFirst("(?i)^\\[lvl\\s+\\d+(?:\\s*[➡→-]\\s*\\d+)?\\]\\s*", "")
                 .replaceFirst("[\\s✪✦★☆✯➊➋➌➍➎]+$", "").strip();
     }
 
