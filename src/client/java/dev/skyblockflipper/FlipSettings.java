@@ -9,11 +9,11 @@ import java.util.Properties;
 
 record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice, long minProfit,
                     AlertPosition alertPosition, boolean noCursorReset, boolean scrollableTooltips, boolean rescueMission,
-                    int minRoi, int minComparableSales, boolean binComparisons) {
+                    int minRoi, int minComparableSales) {
     static final int MIN_SECONDS = 10;
     static final int MAX_SECONDS = 3600;
     static final FlipSettings DEFAULT = new FlipSettings(true, 60, 0, Long.MAX_VALUE, 0, AlertPosition.TOP_RIGHT,
-            false, false, false, 0, 0, true);
+            false, false, false, 0, 0);
 
     FlipSettings {
         if (seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
@@ -56,8 +56,7 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
                 Boolean.parseBoolean(values.getProperty("scrollableTooltips", "false")),
                 Boolean.parseBoolean(values.getProperty("rescueMission", "false")),
                 Integer.parseInt(values.getProperty("minRoi", "0")),
-                Integer.parseInt(values.getProperty("minComparableSales", "0")),
-                Boolean.parseBoolean(values.getProperty("binComparisons", "true")));
+                Integer.parseInt(values.getProperty("minComparableSales", "0")));
     }
 
     void save(Path path) throws IOException {
@@ -74,7 +73,6 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
         values.setProperty("rescueMission", Boolean.toString(rescueMission));
         values.setProperty("minRoi", Integer.toString(minRoi));
         values.setProperty("minComparableSales", Integer.toString(minComparableSales));
-        values.setProperty("binComparisons", Boolean.toString(binComparisons));
 
         Files.createDirectories(path.getParent());
         Path temporary = Files.createTempFile(path.getParent(), ".skyblock-flipper-settings-", ".tmp");

@@ -27,7 +27,6 @@ final class FlipSettingsScreen extends Screen {
     private final java.util.function.Consumer<Screen> openHistory;
     private boolean scrollableTooltips;
     private boolean rescueMission;
-    private boolean binComparisons;
     private Tab tab = Tab.AH_FLIPS;
     private boolean automatic;
     private boolean noCursorReset;
@@ -54,7 +53,6 @@ final class FlipSettingsScreen extends Screen {
         this.openHistory = openHistory;
         this.scrollableTooltips = settings.scrollableTooltips();
         this.rescueMission = settings.rescueMission();
-        this.binComparisons = settings.binComparisons();
         this.values = new String[] {
                 Integer.toString(settings.seconds()),
                 Long.toString(settings.minPrice()),
@@ -84,10 +82,6 @@ final class FlipSettingsScreen extends Screen {
         } else if (tab == Tab.FILTERS) {
             addFilterField(4, "Minimum ROI (%)", 25);
             addFilterField(5, "Minimum observed sales", 50);
-            addRenderableWidget(Button.builder(binLabel(), button -> {
-                binComparisons = !binComparisons;
-                button.setMessage(binLabel());
-            }).bounds(contentLeft, top + 78, contentWidth, 20).build());
         } else {
             addRenderableWidget(Button.builder(cursorLabel(), button -> {
                 noCursorReset = !noCursorReset;
@@ -128,10 +122,6 @@ final class FlipSettingsScreen extends Screen {
         field.setValue(values[index]);
         field.setResponder(value -> values[index] = value);
         addRenderableWidget(field);
-    }
-
-    private Component binLabel() {
-        return Component.literal("BIN comparisons: " + (binComparisons ? "On" : "Off"));
     }
 
     private void addAuctionWidgets() {
@@ -195,8 +185,7 @@ final class FlipSettingsScreen extends Screen {
             int labelWidth = contentWidth - Math.min(92, contentWidth / 3) - 4;
             drawLabel(graphics, "Minimum ROI (%)", top + 30, labelWidth);
             drawLabel(graphics, "Minimum observed sales", top + 55, labelWidth);
-            drawLabel(graphics, "BIN comparisons need two competing listings.", top + 107, contentWidth);
-            drawLabel(graphics, "Use 0 minimum sales to allow BIN comparisons.", top + 121, contentWidth);
+            drawLabel(graphics, "Flips require at least three completed sales.", top + 82, contentWidth);
             hint = "";
         } else {
             drawLabel(graphics, "Keep the cursor in place when you move", top + 51, contentWidth);
@@ -272,7 +261,7 @@ final class FlipSettingsScreen extends Screen {
                     values[1].isEmpty() ? 0 : Long.parseLong(values[1]),
                     values[2].isEmpty() ? Long.MAX_VALUE : Long.parseLong(values[2]),
                     values[3].isEmpty() ? 0 : Long.parseLong(values[3]), position, noCursorReset, scrollableTooltips,
-                    rescueMission, Integer.parseInt(values[4]), Integer.parseInt(values[5]), binComparisons);
+                    rescueMission, Integer.parseInt(values[4]), Integer.parseInt(values[5]));
             saveSettings.save(settings, key);
             onClose();
         } catch (NumberFormatException invalidNumber) {

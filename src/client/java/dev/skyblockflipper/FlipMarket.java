@@ -11,18 +11,17 @@ import java.util.Set;
 final class FlipMarket {
     static final long PRICING_WINDOW_MS = Duration.ofHours(24).toMillis();
     private static final long SALE_HALF_LIFE_MS = Duration.ofHours(6).toMillis();
-    private static final int MIN_FALLBACK_BINS = 2;
     static final int MIN_SALES = 3;
     static final int MAX_COMPARABLE_SALES = 64;
 
     record Sale<K>(String id, K item, long price, long soldAt) {}
     record Listing<K>(String id, K item, String name, long price, long endsAt) {}
-    enum Method { SALES, UNIT_SALES, BIN_COMPARISON, HISTORY }
+    enum Method { SALES, UNIT_SALES, HISTORY }
 
     record Candidate(String id, String name, long buy, long resale, long profit, int sales, long endsAt,
-                     Method method, long latestSaleAt, int competingBins, long lowestCompetingBin) {
+                     Method method, long latestSaleAt, int competingBins, long lowestCompetingBin, long replacementCost) {
         Candidate(String id, String name, long buy, long resale, long profit, int sales, long endsAt) {
-            this(id, name, buy, resale, profit, sales, endsAt, Method.HISTORY, 0, 0, 0);
+            this(id, name, buy, resale, profit, sales, endsAt, Method.HISTORY, 0, 0, 0, 0);
         }
 
         double roi() {
@@ -30,9 +29,6 @@ final class FlipMarket {
         }
 
         double rankingScore() {
-            if (method == Method.BIN_COMPARISON) {
-                return profit * 0.5;
-            }
             return profit * (0.6 + 0.4 * Math.min(sales, 10) / 10.0);
         }
 
@@ -40,7 +36,6 @@ final class FlipMarket {
             return switch (method) {
                 case SALES -> "Comparable sales";
                 case UNIT_SALES -> "Comparable sales per item";
-                case BIN_COMPARISON -> "BIN comparison · no reliable sales estimate";
                 case HISTORY -> "Recorded estimate";
             };
         }
@@ -128,6 +123,7 @@ final class FlipMarket {
 
     static <K> List<Candidate> rank(Map<K, List<Listing<K>>> byItem,
                                     java.util.function.Function<K, Price> priceFor,
+                                    java.util.function.ToLongFunction<K> replacementFor,
                                     Set<String> sold, FlipSettings settings, long now) {
         List<Candidate> candidates = new ArrayList<>();
         for (var group : byItem.entrySet()) {
@@ -149,24 +145,23 @@ final class FlipMarket {
                 continue;
             }
             Price price = priceFor.apply(group.getKey());
-            int samples = price == null ? 0 : price.sales();
-            if (samples < settings.minComparableSales()
-                    || (price == null && (!settings.binComparisons() || competingBins < MIN_FALLBACK_BINS))) {
+            if (price == null || !price.isCurrent(now)
+                    || price.sales() < Math.max(MIN_SALES, settings.minComparableSales())) {
                 continue;
             }
 
-            long resale = price == null ? competingBin - 1 : resale(price, competingBin);
+            long replacement = replacementFor.applyAsLong(group.getKey());
+            long resale = Math.min(resale(price, competingBin), replacement);
             if (resale <= listing.price()) {
                 continue;
             }
             long profit = resale - listing.price() - estimatedFees(resale);
             if (profit > 0 && profit >= settings.minProfit()
                     && 100.0 * profit / listing.price() >= settings.minRoi()) {
-                Method method = price == null ? Method.BIN_COMPARISON
-                        : price.perUnit() ? Method.UNIT_SALES : Method.SALES;
+                Method method = price.perUnit() ? Method.UNIT_SALES : Method.SALES;
                 candidates.add(new Candidate(listing.id(), listing.name(), listing.price(), resale, profit,
-                        samples, listing.endsAt(), method, price == null ? 0 : price.latestSaleAt(),
-                        competingBins, competingBin));
+                        price.sales(), listing.endsAt(), method, price.latestSaleAt(),
+                        competingBins, competingBin, replacement == Long.MAX_VALUE ? 0 : replacement));
             }
         }
 

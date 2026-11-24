@@ -307,7 +307,7 @@ public final class FlipperClient implements ClientModInitializer {
         return scan(source, new FlipSettings(settings.automatic(), settings.seconds(),
                 settings.minPrice(), budget, minProfit, settings.alertPosition(), settings.noCursorReset(),
                 settings.scrollableTooltips(), settings.rescueMission(), settings.minRoi(),
-                settings.minComparableSales(), settings.binComparisons()));
+                settings.minComparableSales()));
     }
 
     private int scan(FabricClientCommandSource source, FlipSettings scanSettings) {
@@ -419,12 +419,15 @@ public final class FlipperClient implements ClientModInitializer {
                 .append(Component.literal("\n" + flip.basis() + "  ·  "
                         + flip.sales() + " observed sales  ·  " + flip.competingBins() + " competing BINs"))
                 .append(Component.literal("\nLowest competing BIN " + coins(flip.lowestCompetingBin())));
+        if (flip.replacementCost() > 0) {
+            details.append(Component.literal("\nEquivalent build cost " + coins(flip.replacementCost())));
+        }
         if (flip.latestSaleAt() > 0) {
             long minutes = Math.max(0, (System.currentTimeMillis() - flip.latestSaleAt()) / 60_000);
             details.append(Component.literal("\nLatest comparable sale " + minutes + "m ago"));
         }
 
-        var line = Component.literal(flip.method() == FlipMarket.Method.BIN_COMPARISON ? "BIN WATCH [OPEN] " : "FLIP [OPEN] ")
+        var line = Component.literal("FLIP [OPEN] ")
                 .withStyle(style -> style.withColor(ChatFormatting.GOLD)
                         .withClickEvent(new ClickEvent.RunCommand("/" + auctionCommand(flip)))
                         .withHoverEvent(new HoverEvent.ShowText(details)))

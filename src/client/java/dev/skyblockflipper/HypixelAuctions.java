@@ -100,6 +100,9 @@ final class HypixelAuctions {
     private final AuctionDatabase database;
     private boolean historyLoaded;
     private int saleCount;
+    private long bonzoFragmentsCost;
+    private long bonzoQuoteAt;
+    private long nextBonzoQuoteAt;
 
     HypixelAuctions(AuctionDatabase database) {
         this.database = database;
@@ -201,11 +204,73 @@ final class HypixelAuctions {
         long now = System.currentTimeMillis();
         var view = pricing;
         int pricedItems = (int) active.byItem().keySet().stream().filter(item -> comparablePrice(view, item, now) != null).count();
-        var candidates = active.isCurrent(now)
-                ? FlipMarket.rank(active.byItem(), item -> comparablePrice(view, item, now), view.sold(), settings, now)
+        if (active.isCurrent(now) && active.byItem().keySet().stream()
+                .anyMatch(item -> isFraggedBonzo(item) && comparablePrice(view, item, now) != null)) {
+            refreshBonzoQuote(now);
+        }
+        long valuationTime = System.currentTimeMillis();
+        var candidates = active.isCurrent(valuationTime)
+                ? FlipMarket.rank(active.byItem(), item -> comparablePrice(view, item, valuationTime),
+                        item -> replacementCost(active, view.sold(), item, valuationTime),
+                        view.sold(), settings, valuationTime)
                 : List.<FlipMarket.Candidate>of();
         return new Scan(active.time(), saleCount, pricedItems,
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), candidates);
+    }
+
+    private void refreshBonzoQuote(long now) throws InterruptedException {
+        if (now < nextBonzoQuoteAt) {
+            return;
+        }
+        nextBonzoQuoteAt = now + SAMPLE_INTERVAL_MS;
+        try {
+            var bazaar = fetchApi("skyblock/bazaar");
+            var fragments = bazaar.getAsJsonObject("products").getAsJsonObject("BONZO_FRAGMENT");
+            long quoteAt = bazaar.get("lastUpdated").getAsLong();
+            bonzoFragmentsCost = instantBuyCost(fragments.getAsJsonArray("buy_summary"), 8);
+            bonzoQuoteAt = quoteAt;
+        } catch (IOException | RuntimeException failure) {
+            LOGGER.debug("Could not price Bonzo Fragments", failure);
+        }
+    }
+
+    static long instantBuyCost(JsonArray offers, int quantity) {
+        double cost = 0;
+        for (var entry : offers) {
+            var offer = entry.getAsJsonObject();
+            int amount = offer.get("amount").getAsInt();
+            double price = offer.get("pricePerUnit").getAsDouble();
+            if (amount <= 0 || price <= 0 || !Double.isFinite(price)) {
+                continue;
+            }
+            int filled = Math.min(quantity, amount);
+            cost += filled * price;
+            quantity -= filled;
+            if (quantity == 0) {
+                return (long) Math.ceil(cost);
+            }
+        }
+        return 0;
+    }
+
+    private static boolean isFraggedBonzo(Item item) {
+        return item.attributes().getStringOr("id", "").equals("STARRED_BONZO_STAFF");
+    }
+
+    private long replacementCost(Snapshot snapshot, Set<String> sold, Item item, long now) {
+        if (!isFraggedBonzo(item)) {
+            return Long.MAX_VALUE;
+        }
+        if (bonzoFragmentsCost <= 0 || now - bonzoQuoteAt > MAX_SNAPSHOT_AGE_MS) {
+            return 0;
+        }
+        // A base staff must have the same count and all the same recorded upgrades.
+        var baseAttributes = item.attributes().copy();
+        baseAttributes.putString("id", "BONZO_STAFF");
+        var base = new Item(item.count(), baseAttributes);
+        var listing = FlipMarket.lowestBin(snapshot.byItem().getOrDefault(base, List.of()), sold, null, now);
+        return listing == null || item.count() != 1 || listing.price() > Long.MAX_VALUE - bonzoFragmentsCost
+                ? 0 : listing.price() + bonzoFragmentsCost;
     }
 
     private Snapshot activeSnapshot() throws IOException, InterruptedException {

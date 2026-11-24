@@ -5,7 +5,7 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.6.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.7.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 
@@ -64,7 +64,7 @@ Route data and approaches are derived from [SkyHanni-REPO](https://github.com/Sk
 - While connected to Hypixel, the mod samples completed BIN sales about once a minute. It keeps observed sales from the past 24 hours in `config/bloodygoodmod-auctions.sqlite` and imports eligible records from the previous `config/skyblock-flipper-sales.nbt` on first use. SQLite supplies recent comparable sales for pricing. A new install starts with the sales it can observe after connecting. The number shown in each result counts observed comparable sales, so it is not a measure of total market volume.
 - Sales-based prices need at least three observed sales in the past 24 hours. Pricing uses a lower quartile of up to 64 sales, with newer sales weighted more heavily. Plain items can fall back to sales of other stack sizes for a per-item comparison. Items with upgrades or unknown attributes still require an exact match.
 - Estimated resale is capped just below the lowest equivalent competing BIN in a snapshot at most two minutes old. Estimated profit subtracts the purchase cost, listing fee and standard collection tax. Duration surcharges and special event modifiers are excluded.
-- In **Filters**, set minimum ROI and observed sales or turn off **BIN comparisons**. With zero minimum sales, **BIN WATCH** can show an opportunity without reliable sales history if at least two competing listings remain. These estimates rank lower than equally profitable sales-backed flips. Hover the chat alert to see the pricing method, recent sales and competing BINs.
+- In **Filters**, set minimum ROI and observed sales. Flip alerts require completed sales and use verified replacement cost where available. Hover an alert for its comparable sales, competing BINs, and replacement cost when used. Fragged Bonzo’s Staff requires a comparable base staff and a fresh Bazaar quote for eight fragments.
 - The client reuses sales and active listing data between requests. The scanner downloads additional listing pages only when Hypixel publishes a new snapshot and reuses decoded item data for listing IDs it has seen before. A complete scan can run longer than the configured interval. Manual scans report the time taken and the age of the listing snapshot. If a listing page fails or the snapshot changes mid-scan, the mod cancels the remaining page requests and keeps the last complete snapshot. Listings may already have sold by the time you open them in-game.
 
 [Hypixel Public API](https://api.hypixel.net/#tag/SkyBlock) · [Auction House fees](https://hypixelskyblock.minecraft.wiki/w/Auction_House#Fees_and_Taxes) · [Fabric for Minecraft 26.2](https://fabricmc.net/2026/06/15/262.html)

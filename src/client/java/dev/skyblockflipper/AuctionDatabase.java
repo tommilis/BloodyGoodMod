@@ -259,10 +259,11 @@ final class AuctionDatabase {
     List<SeenFlip> recentFlips(long now) throws IOException {
         try (var connection = open();
              var query = connection.prepareStatement("""
-                     SELECT * FROM flips WHERE seen_at >= ?
+                     SELECT * FROM flips WHERE seen_at >= ? AND samples >= ?
                      ORDER BY seen_at DESC, profit DESC, id LIMIT 100
                      """)) {
             query.setLong(1, now - FLIP_RETENTION);
+            query.setInt(2, FlipMarket.MIN_SALES);
             var flips = new ArrayList<SeenFlip>();
             try (var rows = query.executeQuery()) {
                 while (rows.next()) {
