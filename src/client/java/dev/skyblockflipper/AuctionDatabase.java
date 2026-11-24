@@ -33,7 +33,8 @@ final class AuctionDatabase {
     // Any usable active snapshot is at most two minutes old.
     private static final long SOLD_LOOKBACK = Duration.ofMinutes(10).toMillis();
 
-    record Sales(Map<HypixelAuctions.Item, FlipMarket.Price> prices, Set<String> sold, int count) {}
+    record Sales(Map<HypixelAuctions.Item, FlipMarket.Price> prices, Map<HypixelAuctions.Item, FlipMarket.Price> unitPrices,
+                 Set<String> sold, int count) {}
     record SeenFlip(FlipMarket.Candidate candidate, long seenAt) {}
 
     private final Path path;
@@ -149,22 +150,21 @@ final class AuctionDatabase {
     Sales readSales(long now) throws IOException {
         try (var connection = open()) {
             var prices = new HashMap<HypixelAuctions.Item, FlipMarket.Price>();
+            var unitSales = new HashMap<HypixelAuctions.Item, List<FlipMarket.Sale<HypixelAuctions.Item>>>();
             try (var query = connection.prepareStatement("""
                     WITH recent AS (
                         SELECT id, variant, price, sold_at,
-                               row_number() OVER (PARTITION BY variant ORDER BY sold_at DESC, id) AS rank,
-                               count(*) OVER (PARTITION BY variant) AS samples
+                               row_number() OVER (PARTITION BY variant ORDER BY sold_at DESC, id) AS rank
                         FROM sales WHERE sold_at > ? AND sold_at <= ?
                     )
                     SELECT recent.*, variants.item_count, variants.attributes
                     FROM recent JOIN variants USING (variant)
-                    WHERE rank <= ? AND samples >= ?
+                    WHERE rank <= ?
                     ORDER BY variant, rank
                     """)) {
                 query.setLong(1, now - FlipMarket.PRICING_WINDOW_MS);
                 query.setLong(2, now);
                 query.setInt(3, FlipMarket.MAX_COMPARABLE_SALES);
-                query.setInt(4, FlipMarket.MIN_SALES);
                 try (var rows = query.executeQuery()) {
                     var group = new ArrayList<FlipMarket.Sale<HypixelAuctions.Item>>();
                     String key = null;
@@ -179,12 +179,25 @@ final class AuctionDatabase {
                             var attributes = NbtIo.readCompressed(data, NbtAccounter.create(4L * 1024 * 1024));
                             item = new HypixelAuctions.Item(rows.getInt("item_count"), attributes);
                         }
-                        group.add(new FlipMarket.Sale<>(rows.getString("id"), item,
-                                rows.getLong("price"), rows.getLong("sold_at")));
+                        var sale = new FlipMarket.Sale<>(rows.getString("id"), item,
+                                rows.getLong("price"), rows.getLong("sold_at"));
+                        group.add(sale);
+                        var unit = item.unitKey();
+                        if (unit != null && sale.price() >= item.count()) {
+                            unitSales.computeIfAbsent(unit, ignored -> new ArrayList<>()).add(
+                                    new FlipMarket.Sale<>(sale.id(), unit, sale.price() / item.count(), sale.soldAt()));
+                        }
                     }
                     addPrice(prices, item, group, now);
                 }
             }
+            var unitPrices = new HashMap<HypixelAuctions.Item, FlipMarket.Price>();
+            unitSales.forEach((item, sales) -> {
+                sales.sort(java.util.Comparator.comparingLong(
+                        (FlipMarket.Sale<HypixelAuctions.Item> sale) -> sale.soldAt()).reversed()
+                        .thenComparing(FlipMarket.Sale::id));
+                addPrice(unitPrices, item, sales.subList(0, Math.min(sales.size(), FlipMarket.MAX_COMPARABLE_SALES)), now);
+            });
             var sold = new HashSet<String>();
             try (var query = connection.prepareStatement("SELECT id FROM sales WHERE sold_at >= ?")) {
                 query.setLong(1, now - SOLD_LOOKBACK);
@@ -196,7 +209,7 @@ final class AuctionDatabase {
             }
             try (var statement = connection.createStatement();
                  var row = statement.executeQuery("SELECT count(*) FROM sales")) {
-                return new Sales(Map.copyOf(prices), Set.copyOf(sold), row.getInt(1));
+                return new Sales(Map.copyOf(prices), Map.copyOf(unitPrices), Set.copyOf(sold), row.getInt(1));
             }
         } catch (SQLException failure) {
             throw new IOException("Could not read the local sales database.", failure);

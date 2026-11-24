@@ -63,7 +63,8 @@ final class AuctionPriceOverlay {
             suggestedText = "Suggested price: not enough recent sales";
         } else {
             String label = estimate.lowestBin() > 0 ? "Suggested price: " : "Recent sale estimate: ";
-            suggestedText = label + coins(estimate.suggestedCoins()) + " coins (" + estimate.sales() + " sales)";
+            suggestedText = label + coins(estimate.suggestedCoins()) + " coins (" + estimate.sales()
+                    + (estimate.perUnit() ? " per-item comps)" : " observed sales)");
         }
     }
 

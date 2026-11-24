@@ -20,13 +20,14 @@ final class FlipSettingsScreen extends Screen {
         void save(FlipSettings settings, InputConstants.Key key) throws IOException;
     }
 
-    private enum Tab { AH_FLIPS, OTHER }
+    private enum Tab { AH_FLIPS, FILTERS, OTHER }
 
     private final String[] values;
     private final SaveSettings saveSettings;
     private final java.util.function.Consumer<Screen> openHistory;
     private boolean scrollableTooltips;
     private boolean rescueMission;
+    private boolean binComparisons;
     private Tab tab = Tab.AH_FLIPS;
     private boolean automatic;
     private boolean noCursorReset;
@@ -53,11 +54,14 @@ final class FlipSettingsScreen extends Screen {
         this.openHistory = openHistory;
         this.scrollableTooltips = settings.scrollableTooltips();
         this.rescueMission = settings.rescueMission();
+        this.binComparisons = settings.binComparisons();
         this.values = new String[] {
                 Integer.toString(settings.seconds()),
                 Long.toString(settings.minPrice()),
                 settings.maxPrice() == Long.MAX_VALUE ? "" : Long.toString(settings.maxPrice()),
-                Long.toString(settings.minProfit())
+                Long.toString(settings.minProfit()),
+                Integer.toString(settings.minRoi()),
+                Integer.toString(settings.minComparableSales())
         };
     }
 
@@ -71,11 +75,19 @@ final class FlipSettingsScreen extends Screen {
         contentWidth = left + panelWidth - 8 - contentLeft;
 
         addTab(Tab.AH_FLIPS, "AH Flips", 24);
-        addTab(Tab.OTHER, "Other", 48);
+        addTab(Tab.FILTERS, "Filters", 48);
+        addTab(Tab.OTHER, "Other", 72);
         addRenderableWidget(Button.builder(Component.literal("History"), button -> openHistory.accept(this))
-                .bounds(left + 5, top + 72, sidebarWidth - 10, 20).build());
+                .bounds(left + 5, top + 96, sidebarWidth - 10, 20).build());
         if (tab == Tab.AH_FLIPS) {
             addAuctionWidgets();
+        } else if (tab == Tab.FILTERS) {
+            addFilterField(4, "Minimum ROI (%)", 25);
+            addFilterField(5, "Minimum observed sales", 50);
+            addRenderableWidget(Button.builder(binLabel(), button -> {
+                binComparisons = !binComparisons;
+                button.setMessage(binLabel());
+            }).bounds(contentLeft, top + 78, contentWidth, 20).build());
         } else {
             addRenderableWidget(Button.builder(cursorLabel(), button -> {
                 noCursorReset = !noCursorReset;
@@ -106,6 +118,20 @@ final class FlipSettingsScreen extends Screen {
             rebuildWidgets();
         }).bounds(left + 5, top + y, sidebarWidth - 10, 20).build());
         button.active = tab != destination;
+    }
+
+    private void addFilterField(int index, String label, int y) {
+        int fieldWidth = Math.min(92, contentWidth / 3);
+        var field = new EditBox(font, contentLeft + contentWidth - fieldWidth, top + y,
+                fieldWidth, 18, Component.literal(label));
+        field.setMaxLength(10);
+        field.setValue(values[index]);
+        field.setResponder(value -> values[index] = value);
+        addRenderableWidget(field);
+    }
+
+    private Component binLabel() {
+        return Component.literal("BIN comparisons: " + (binComparisons ? "On" : "Off"));
     }
 
     private void addAuctionWidgets() {
@@ -151,7 +177,7 @@ final class FlipSettingsScreen extends Screen {
         }
         graphics.fill(left, top, left + panelWidth, top + 198, 0xFF181818);
         graphics.fill(left, top + 18, left + sidebarWidth, top + 198, 0xFF242424);
-        int selectedY = top + (tab == Tab.AH_FLIPS ? 24 : 48);
+        int selectedY = top + 24 + tab.ordinal() * 24;
         graphics.fill(left + 2, selectedY, left + 4, selectedY + 20, 0xFFFFAA00);
         super.extractRenderState(graphics, mouseX, mouseY, delta);
         graphics.centeredText(font, title, width / 2, top + 7, 0xFFFFFFFF);
@@ -165,6 +191,13 @@ final class FlipSettingsScreen extends Screen {
             drawLabel(graphics, "Latest auction key", top + 138,
                     contentWidth - Math.min(97, contentWidth / 3) - 53);
             hint = "Interval 10–3600s · Blank max = unlimited";
+        } else if (tab == Tab.FILTERS) {
+            int labelWidth = contentWidth - Math.min(92, contentWidth / 3) - 4;
+            drawLabel(graphics, "Minimum ROI (%)", top + 30, labelWidth);
+            drawLabel(graphics, "Minimum observed sales", top + 55, labelWidth);
+            drawLabel(graphics, "BIN comparisons need two competing listings.", top + 107, contentWidth);
+            drawLabel(graphics, "Use 0 minimum sales to allow BIN comparisons.", top + 121, contentWidth);
+            hint = "";
         } else {
             drawLabel(graphics, "Keep the cursor in place when you move", top + 51, contentWidth);
             drawLabel(graphics, "between inventory and chest menus.", top + 64, contentWidth);
@@ -239,7 +272,7 @@ final class FlipSettingsScreen extends Screen {
                     values[1].isEmpty() ? 0 : Long.parseLong(values[1]),
                     values[2].isEmpty() ? Long.MAX_VALUE : Long.parseLong(values[2]),
                     values[3].isEmpty() ? 0 : Long.parseLong(values[3]), position, noCursorReset, scrollableTooltips,
-                    rescueMission);
+                    rescueMission, Integer.parseInt(values[4]), Integer.parseInt(values[5]), binComparisons);
             saveSettings.save(settings, key);
             onClose();
         } catch (NumberFormatException invalidNumber) {
@@ -253,7 +286,7 @@ final class FlipSettingsScreen extends Screen {
 
     private void showAuctionError(String message) {
         error = message;
-        if (tab != Tab.AH_FLIPS) {
+        if (tab == Tab.OTHER) {
             tab = Tab.AH_FLIPS;
             rebuildWidgets();
         }

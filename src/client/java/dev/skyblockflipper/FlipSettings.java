@@ -8,11 +8,12 @@ import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
 record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice, long minProfit,
-                    AlertPosition alertPosition, boolean noCursorReset, boolean scrollableTooltips, boolean rescueMission) {
+                    AlertPosition alertPosition, boolean noCursorReset, boolean scrollableTooltips, boolean rescueMission,
+                    int minRoi, int minComparableSales, boolean binComparisons) {
     static final int MIN_SECONDS = 10;
     static final int MAX_SECONDS = 3600;
     static final FlipSettings DEFAULT = new FlipSettings(true, 60, 0, Long.MAX_VALUE, 0, AlertPosition.TOP_RIGHT,
-            false, false, false);
+            false, false, false, 0, 0, true);
 
     FlipSettings {
         if (seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
@@ -20,6 +21,9 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
         }
         if (minPrice < 0 || maxPrice < 1 || minPrice > maxPrice) {
             throw new IllegalArgumentException("Enter a valid minimum and maximum buy price.");
+        }
+        if (minRoi < 0 || minComparableSales < 0 || minComparableSales > FlipMarket.MAX_COMPARABLE_SALES) {
+            throw new IllegalArgumentException("ROI must be nonnegative and comparable sales must be 0–64.");
         }
         if (minProfit < 0) {
             throw new IllegalArgumentException("Minimum profit must be zero or more.");
@@ -50,7 +54,10 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
                 Long.parseLong(values.getProperty("minProfit", "0")), position,
                 Boolean.parseBoolean(values.getProperty("noCursorReset", "false")),
                 Boolean.parseBoolean(values.getProperty("scrollableTooltips", "false")),
-                Boolean.parseBoolean(values.getProperty("rescueMission", "false")));
+                Boolean.parseBoolean(values.getProperty("rescueMission", "false")),
+                Integer.parseInt(values.getProperty("minRoi", "0")),
+                Integer.parseInt(values.getProperty("minComparableSales", "0")),
+                Boolean.parseBoolean(values.getProperty("binComparisons", "true")));
     }
 
     void save(Path path) throws IOException {
@@ -65,6 +72,9 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
 
         values.setProperty("scrollableTooltips", Boolean.toString(scrollableTooltips));
         values.setProperty("rescueMission", Boolean.toString(rescueMission));
+        values.setProperty("minRoi", Integer.toString(minRoi));
+        values.setProperty("minComparableSales", Integer.toString(minComparableSales));
+        values.setProperty("binComparisons", Boolean.toString(binComparisons));
 
         Files.createDirectories(path.getParent());
         Path temporary = Files.createTempFile(path.getParent(), ".skyblock-flipper-settings-", ".tmp");

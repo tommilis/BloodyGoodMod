@@ -5,7 +5,7 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.3.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.4.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 
@@ -50,7 +50,7 @@ Route data and approaches are derived from [SkyHanni-REPO](https://github.com/Sk
 | `/bgm` | Open settings. |
 | `/bgm history` | Open the latest detected flip opportunities. |
 | `/bgm status` | Show the SkyBlock area, listing snapshot age, last successful sales check, any recent API errors, and the rate-limit countdown when applicable. |
-| `/bgm scan` | Collect a sales sample, then show up to five BIN flips ranked by estimated profit. |
+| `/bgm scan` | Collect a sales sample, then show up to five BIN flips ranked by estimated profit and pricing evidence. |
 | `/bgm scan 5000000` | Limit purchase prices to five million coins. |
 | `/bgm scan 5000000 250000` | Limit purchase prices to five million coins and require at least 250,000 coins in estimated profit. |
 | `/bgm sample` | Show how many sales are recorded and request a new batch if the last sample was at least a minute ago. |
@@ -58,8 +58,9 @@ Route data and approaches are derived from [SkyHanni-REPO](https://github.com/Sk
 ## How prices are estimated
 
 - While connected to Hypixel, the mod samples completed BIN sales about once a minute. It keeps observed sales from the past 24 hours in `config/bloodygoodmod-auctions.sqlite` and imports eligible records from the previous `config/skyblock-flipper-sales.nbt` on first use. SQLite supplies recent comparable sales for pricing. A new install starts with the sales it can observe after connecting. The number shown in each result counts observed comparable sales, so it is not a measure of total market volume.
-- The mod requires at least three sales for the same stack size and item attributes within two hours, including one from the past 30 minutes. Items whose data cannot be decoded are skipped. Exact attribute matching can leave unique gear and pets without a price estimate.
-- Estimated resale uses the lower quartile of up to 12 recent comparable sales, capped one coin below the cheapest equivalent competing BIN. A flip requires at least one live competitor in a snapshot at most two minutes old. Estimated profit subtracts the purchase cost, estimated BIN listing fee, and standard collection tax. Duration surcharges and special event modifiers are excluded from the estimate.
+- Sales-based prices need at least three observed sales in the past 24 hours. Pricing uses a lower quartile of up to 64 sales, with newer sales weighted more heavily. Plain items can fall back to sales of other stack sizes for a per-item comparison. Items with upgrades or unknown attributes still require an exact match.
+- Estimated resale is capped just below the lowest equivalent competing BIN in a snapshot at most two minutes old. Estimated profit subtracts the purchase cost, listing fee and standard collection tax. Duration surcharges and special event modifiers are excluded.
+- In **Filters**, set minimum ROI and observed sales or turn off **BIN comparisons**. With zero minimum sales, **BIN WATCH** can show an opportunity without reliable sales history if at least two competing listings remain. These estimates rank lower than equally profitable sales-backed flips. Hover the chat alert to see the pricing method, recent sales and competing BINs.
 - The client reuses sales and active listing data between requests. The scanner downloads additional listing pages only when Hypixel publishes a new snapshot and reuses decoded item data for listing IDs it has seen before. A complete scan can run longer than the configured interval. Manual scans report the time taken and the age of the listing snapshot. If a listing page fails or the snapshot changes mid-scan, the mod cancels the remaining page requests and keeps the last complete snapshot. Listings may already have sold by the time you open them in-game.
 
 [Hypixel Public API](https://api.hypixel.net/#tag/SkyBlock) · [Auction House fees](https://hypixelskyblock.minecraft.wiki/w/Auction_House#Fees_and_Taxes) · [Fabric for Minecraft 26.2](https://fabricmc.net/2026/06/15/262.html)

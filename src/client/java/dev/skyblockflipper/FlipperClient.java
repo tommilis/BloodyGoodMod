@@ -303,7 +303,8 @@ public final class FlipperClient implements ClientModInitializer {
         }
         return scan(source, new FlipSettings(settings.automatic(), settings.seconds(),
                 settings.minPrice(), budget, minProfit, settings.alertPosition(), settings.noCursorReset(),
-                settings.scrollableTooltips(), settings.rescueMission()));
+                settings.scrollableTooltips(), settings.rescueMission(), settings.minRoi(),
+                settings.minComparableSales(), settings.binComparisons()));
     }
 
     private int scan(FabricClientCommandSource source, FlipSettings scanSettings) {
@@ -371,7 +372,7 @@ public final class FlipperClient implements ClientModInitializer {
 
     private void showResults(Consumer<Component> feedback, HypixelAuctions.Scan results) {
         String elapsed = String.format(Locale.US, "%.1fs", results.elapsedMillis() / 1_000.0);
-        if (results.pricedItems() == 0) {
+        if (results.pricedItems() == 0 && results.candidates().isEmpty()) {
             tell(feedback, "Scan took " + elapsed + ". No variants have enough recent sales yet ("
                     + results.saleCount() + " recorded sales).");
             return;
@@ -407,13 +408,20 @@ public final class FlipperClient implements ClientModInitializer {
     }
 
     private static void showFlip(Consumer<Component> feedback, FlipMarket.Candidate flip) {
-        long returnPercent = Math.round(100.0 * flip.profit() / flip.buy());
+        long returnPercent = Math.round(flip.roi());
         var details = Component.literal("Open auction")
                 .append(Component.literal("\nBuy " + coins(flip.buy()) + "  ·  Estimated resale " + coins(flip.resale())))
                 .append(Component.literal("\nEstimated after standard fees " + coins(flip.profit()) + "  ·  "
-                        + flip.sales() + " comparable sales"));
+                        + returnPercent + "% ROI"))
+                .append(Component.literal("\n" + flip.basis() + "  ·  "
+                        + flip.sales() + " observed sales  ·  " + flip.competingBins() + " competing BINs"))
+                .append(Component.literal("\nLowest competing BIN " + coins(flip.lowestCompetingBin())));
+        if (flip.latestSaleAt() > 0) {
+            long minutes = Math.max(0, (System.currentTimeMillis() - flip.latestSaleAt()) / 60_000);
+            details.append(Component.literal("\nLatest comparable sale " + minutes + "m ago"));
+        }
 
-        var line = Component.literal("FLIP [OPEN] ")
+        var line = Component.literal(flip.method() == FlipMarket.Method.BIN_COMPARISON ? "BIN WATCH [OPEN] " : "FLIP [OPEN] ")
                 .withStyle(style -> style.withColor(ChatFormatting.GOLD)
                         .withClickEvent(new ClickEvent.RunCommand("/" + auctionCommand(flip)))
                         .withHoverEvent(new HoverEvent.ShowText(details)))

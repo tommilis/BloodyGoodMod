@@ -51,7 +51,12 @@ final class HypixelAuctions {
     private static final int MAX_PAGES = 200;
     private static final int MAX_ITEM_BYTES = 256 * 1024;
 
-    record Item(int count, CompoundTag attributes) {}
+    record Item(int count, CompoundTag attributes) {
+        Item unitKey() {
+            // Keep every upgrade and unknown field significant. Only plain stacks share a unit price.
+            return attributes.size() == 1 ? new Item(1, attributes) : null;
+        }
+    }
     record Sample(int added, int saleCount) {}
     record Status(long snapshotTime, long salesCheckedAt, long backoffUntil,
                   String listingError, String salesError) {}
@@ -63,7 +68,8 @@ final class HypixelAuctions {
             return now - time <= MAX_SNAPSHOT_AGE_MS;
         }
     }
-    private record PricingView(Map<Item, FlipMarket.Price> prices, Set<String> sold, Snapshot snapshot) {}
+    private record PricingView(Map<Item, FlipMarket.Price> prices, Map<Item, FlipMarket.Price> unitPrices,
+                               Set<String> sold, Snapshot snapshot) {}
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5)).build();
@@ -76,7 +82,7 @@ final class HypixelAuctions {
     }
 
     private volatile long nextSaleRequestAt;
-    private volatile PricingView pricing = new PricingView(Map.of(), Set.of(), null);
+    private volatile PricingView pricing = new PricingView(Map.of(), Map.of(), Set.of(), null);
     private volatile long lastActiveRequest;
     private volatile long salesCheckedAt;
     private volatile String listingError = "";
@@ -157,7 +163,7 @@ final class HypixelAuctions {
     private void publishSales(long now) throws IOException {
         var sales = database.readSales(now);
         saleCount = sales.count();
-        pricing = new PricingView(sales.prices(), sales.sold(), pricing.snapshot());
+        pricing = new PricingView(sales.prices(), sales.unitPrices(), sales.sold(), pricing.snapshot());
     }
 
     Scan scan(FlipSettings settings) throws IOException, InterruptedException {
@@ -170,9 +176,9 @@ final class HypixelAuctions {
         Snapshot active = activeSnapshot();
         long now = System.currentTimeMillis();
         var view = pricing;
-        int pricedItems = (int) view.prices().values().stream().filter(price -> price.isCurrent(now)).count();
+        int pricedItems = (int) active.byItem().keySet().stream().filter(item -> comparablePrice(view, item, now) != null).count();
         var candidates = active.isCurrent(now)
-                ? FlipMarket.rank(active.byItem(), view.prices(), view.sold(), settings, now)
+                ? FlipMarket.rank(active.byItem(), item -> comparablePrice(view, item, now), view.sold(), settings, now)
                 : List.<FlipMarket.Candidate>of();
         return new Scan(active.time(), saleCount, pricedItems,
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), candidates);
@@ -267,7 +273,7 @@ final class HypixelAuctions {
             }
         }
         var snapshot = new Snapshot(updated, FlipMarket.indexListings(listings.values()), Map.copyOf(listings));
-        pricing = new PricingView(pricing.prices(), pricing.sold(), snapshot);
+        pricing = new PricingView(pricing.prices(), pricing.unitPrices(), pricing.sold(), snapshot);
         listingError = "";
         return snapshot;
     }
@@ -373,7 +379,11 @@ final class HypixelAuctions {
                 lowestBin = listing.price();
             }
         }
-        return FlipMarket.listingPrice(view.prices().get(item), lowestBin, fresh, now);
+        return FlipMarket.listingPrice(comparablePrice(view, item, now), lowestBin, fresh, now);
+    }
+
+    private static FlipMarket.Price comparablePrice(PricingView view, Item item, long now) {
+        return FlipMarket.comparablePrice(item, item.unitKey(), item.count(), view.prices(), view.unitPrices(), now);
     }
 
     private JsonObject fetch(String resource) throws IOException, InterruptedException {
