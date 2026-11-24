@@ -8,10 +8,11 @@ import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
 record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice, long minProfit,
-                    AlertPosition alertPosition, boolean noCursorReset, boolean scrollableTooltips) {
+                    AlertPosition alertPosition, boolean noCursorReset, boolean scrollableTooltips, boolean rescueMission) {
     static final int MIN_SECONDS = 10;
     static final int MAX_SECONDS = 3600;
-    static final FlipSettings DEFAULT = new FlipSettings(true, 60, 0, Long.MAX_VALUE, 0, AlertPosition.TOP_RIGHT, false, false);
+    static final FlipSettings DEFAULT = new FlipSettings(true, 60, 0, Long.MAX_VALUE, 0, AlertPosition.TOP_RIGHT,
+            false, false, false);
 
     FlipSettings {
         if (seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
@@ -48,7 +49,8 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
                 Long.parseLong(values.getProperty("maxPrice", Long.toString(Long.MAX_VALUE))),
                 Long.parseLong(values.getProperty("minProfit", "0")), position,
                 Boolean.parseBoolean(values.getProperty("noCursorReset", "false")),
-                Boolean.parseBoolean(values.getProperty("scrollableTooltips", "false")));
+                Boolean.parseBoolean(values.getProperty("scrollableTooltips", "false")),
+                Boolean.parseBoolean(values.getProperty("rescueMission", "false")));
     }
 
     void save(Path path) throws IOException {
@@ -62,6 +64,7 @@ record FlipSettings(boolean automatic, int seconds, long minPrice, long maxPrice
         values.setProperty("noCursorReset", Boolean.toString(noCursorReset));
 
         values.setProperty("scrollableTooltips", Boolean.toString(scrollableTooltips));
+        values.setProperty("rescueMission", Boolean.toString(rescueMission));
 
         Files.createDirectories(path.getParent());
         Path temporary = Files.createTempFile(path.getParent(), ".skyblock-flipper-settings-", ".tmp");

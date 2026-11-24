@@ -10,6 +10,7 @@ import net.minecraft.client.multiplayer.ClientPacketListener;
 final class SkyBlockLocation {
     private ClientPacketListener connection;
     private String area;
+    private String mode;
 
     void register() {
         var api = HypixelModAPI.getInstance();
@@ -24,12 +25,14 @@ final class SkyBlockLocation {
                 connection = packet.getServerType().orElse(null) == GameType.SKYBLOCK
                         && packet.getLobbyName().isEmpty() ? receivedOn : null;
                 area = packet.getMap().or(() -> packet.getMode()).orElse("SkyBlock");
+                mode = packet.getMode().orElse("");
             });
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             if (connection == handler) {
                 connection = null;
                 area = null;
+                mode = null;
             }
         });
     }
@@ -40,5 +43,11 @@ final class SkyBlockLocation {
 
     String description(Minecraft client) {
         return connection(client) == null ? "Waiting for SkyBlock location" : area;
+    }
+
+    boolean isCrimsonIsle(Minecraft client) {
+        return connection(client) != null
+                && ("crimson_isle".equalsIgnoreCase(mode) || "nether".equalsIgnoreCase(mode)
+                || "Crimson Isle".equalsIgnoreCase(area));
     }
 }

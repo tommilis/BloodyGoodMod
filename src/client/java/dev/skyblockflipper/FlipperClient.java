@@ -2,6 +2,7 @@ package dev.skyblockflipper;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.LongArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
@@ -84,6 +85,8 @@ public final class FlipperClient implements ClientModInitializer {
         CursorResetSetting.enabled = settings.noCursorReset();
         TooltipScrolling.enabled = settings.scrollableTooltips();
         location.register();
+        var rescueGuide = new RescueMissionGuide(location, () -> settings.rescueMission());
+        rescueGuide.register();
 
         var category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("skyblock_flipper", "keys"));
         auctionKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.skyblock_flipper.latest",
@@ -120,6 +123,11 @@ public final class FlipperClient implements ClientModInitializer {
                             return 1;
                         }))
                         .then(literal("status").executes(command -> showStatus(command.getSource())))
+                        .then(literal("rescue").then(argument("rank", StringArgumentType.word()).executes(command -> {
+                            tell(command.getSource()::sendFeedback,
+                                    rescueGuide.selectManualRoute(StringArgumentType.getString(command, "rank")));
+                            return 1;
+                        })))
                         .then(literal("settings").executes(command -> {
                             settingsRequested = true;
                             return 1;
@@ -294,7 +302,8 @@ public final class FlipperClient implements ClientModInitializer {
             return 0;
         }
         return scan(source, new FlipSettings(settings.automatic(), settings.seconds(),
-                settings.minPrice(), budget, minProfit, settings.alertPosition(), settings.noCursorReset(), settings.scrollableTooltips()));
+                settings.minPrice(), budget, minProfit, settings.alertPosition(), settings.noCursorReset(),
+                settings.scrollableTooltips(), settings.rescueMission()));
     }
 
     private int scan(FabricClientCommandSource source, FlipSettings scanSettings) {

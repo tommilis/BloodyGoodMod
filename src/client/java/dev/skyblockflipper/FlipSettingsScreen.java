@@ -26,6 +26,7 @@ final class FlipSettingsScreen extends Screen {
     private final SaveSettings saveSettings;
     private final java.util.function.Consumer<Screen> openHistory;
     private boolean scrollableTooltips;
+    private boolean rescueMission;
     private Tab tab = Tab.AH_FLIPS;
     private boolean automatic;
     private boolean noCursorReset;
@@ -51,6 +52,7 @@ final class FlipSettingsScreen extends Screen {
         this.saveSettings = saveSettings;
         this.openHistory = openHistory;
         this.scrollableTooltips = settings.scrollableTooltips();
+        this.rescueMission = settings.rescueMission();
         this.values = new String[] {
                 Integer.toString(settings.seconds()),
                 Long.toString(settings.minPrice()),
@@ -83,6 +85,10 @@ final class FlipSettingsScreen extends Screen {
                 scrollableTooltips = !scrollableTooltips;
                 button.setMessage(tooltipLabel());
             }).bounds(contentLeft, top + 84, contentWidth, 20).build());
+            addRenderableWidget(Button.builder(rescueLabel(), button -> {
+                rescueMission = !rescueMission;
+                button.setMessage(rescueLabel());
+            }).bounds(contentLeft, top + 127, contentWidth, 20).build());
         }
 
         int half = (contentWidth - 8) / 2;
@@ -163,7 +169,7 @@ final class FlipSettingsScreen extends Screen {
             drawLabel(graphics, "Keep the cursor in place when you move", top + 51, contentWidth);
             drawLabel(graphics, "between inventory and chest menus.", top + 64, contentWidth);
             drawLabel(graphics, "Use the mouse wheel on tall tooltips.", top + 111, contentWidth);
-            hint = "";
+            hint = "Rescue Mission waypoints on the Crimson Isle";
         }
 
         if (!error.isEmpty()) {
@@ -215,6 +221,10 @@ final class FlipSettingsScreen extends Screen {
         return Component.literal("Scrollable tooltips: " + (scrollableTooltips ? "On" : "Off"));
     }
 
+    private Component rescueLabel() {
+        return Component.literal("Rescue mission: " + (rescueMission ? "On" : "Off"));
+    }
+
     private Component positionLabel() {
         return Component.literal("Alert: " + position.label());
     }
@@ -228,7 +238,8 @@ final class FlipSettingsScreen extends Screen {
             var settings = new FlipSettings(automatic, Integer.parseInt(values[0]),
                     values[1].isEmpty() ? 0 : Long.parseLong(values[1]),
                     values[2].isEmpty() ? Long.MAX_VALUE : Long.parseLong(values[2]),
-                    values[3].isEmpty() ? 0 : Long.parseLong(values[3]), position, noCursorReset, scrollableTooltips);
+                    values[3].isEmpty() ? 0 : Long.parseLong(values[3]), position, noCursorReset, scrollableTooltips,
+                    rescueMission);
             saveSettings.save(settings, key);
             onClose();
         } catch (NumberFormatException invalidNumber) {

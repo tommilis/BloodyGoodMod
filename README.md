@@ -5,7 +5,7 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.1.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.2.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 
@@ -34,6 +34,14 @@ The behavior was informed by [Better Screens](https://modrinth.com/project/bette
 Open `/bgm`, choose **Other → Scrollable tooltips**, and click **Save**. Hover a tall tooltip and use the wheel to read its remaining lines. This also covers mod screens that use Minecraft's standard tooltip renderer.
 
 The **History** button opens a separate screen with up to 100 recently detected opportunities, including the buy price, estimated resale, estimated profit, and time detected. The mod retains these entries locally for 30 days.
+
+## Rescue Mission guide
+
+In `/bgm` → **Other**, enable **Rescue mission** and click **Save**. Open the Rescue quest at the Crimson Isle Town Board so the mod can read its rank, then talk to the Undercover Agent. Follow the teal route. If a visible guard gets close to an upcoming segment, the guide marks the stopping point in amber and waits for the way to clear. The alert depends on visible, named guards and is not a guarantee that a segment is clear.
+
+Use `/bgm rescue <rank>` after talking to the Agent to choose a route manually. Mage supports A–D and Barbarian supports A–D plus S1 and S2. If your Barbarian S-route starts in the wrong direction, use `/bgm rescue s2`.
+
+Route data and approaches are derived from [SkyHanni-REPO](https://github.com/SkyHanniStudios/SkyHanni-REPO), with the upstream known guard zones excluded from the Cathedral approaches. The MIT notice for the data is bundled with the mod.
 
 ## Commands
 
