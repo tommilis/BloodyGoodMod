@@ -168,7 +168,7 @@ final class FlipMarket {
                 continue;
             }
             long profit = resale - listing.price() - estimatedFees(resale);
-            int required = settings.minComparableSales() > 0 ? settings.minComparableSales() : (profit >= 3_000_000 ? 6 : 12);
+            int required = settings.minComparableSales() > 0 ? settings.minComparableSales() : (profit >= 3_000_000 ? 12 : 6);
             if (price.sales() < required) continue;
             if (profit > 0 && profit >= settings.minProfit()
                     && 100.0 * profit / listing.price() >= settings.minRoi()) {

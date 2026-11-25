@@ -187,7 +187,7 @@ final class FlipSettingsScreen extends Screen {
             drawLabel(graphics, "Minimum ROI (%)", top + 30, labelWidth);
             drawLabel(graphics, "Minimum observed sales", top + 55, labelWidth);
             drawLabel(graphics, "Maximum age (minutes)", top + 83, labelWidth);
-            drawLabel(graphics, "0 = 12 sales, or 6 for 3M+ profit.", top + 108, contentWidth);
+            drawLabel(graphics, "0 = 6 sales below 3M profit, 12 at 3M+.", top + 108, contentWidth);
             hint = "";
         } else {
             drawLabel(graphics, "Keep the cursor in place when you move", top + 51, contentWidth);
