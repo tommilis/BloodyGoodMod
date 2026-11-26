@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -38,17 +39,68 @@ final class AuctionDatabase {
     record SaleEvent(String auction, String variant, String itemUuid, String buyer, String seller, long price, long time) {}
 
     private List<SaleEvent> lastBatch = List.of();
-    private final Path path;
+    private final Path configDirectory;
     private final SaleHistory legacy;
+    private Path databasePath;
 
     AuctionDatabase(Path configDirectory) {
-        path = configDirectory.resolve("bloodygoodmod-auctions.sqlite");
+        this.configDirectory = configDirectory.toAbsolutePath().normalize();
         legacy = new SaleHistory(configDirectory.resolve("skyblock-flipper-sales.nbt"));
     }
 
+    private Path resolveDatabasePath() throws IOException, SQLException {
+        if (databasePath != null) {
+            return databasePath;
+        }
+
+        Path defaultPath = configDirectory.resolve("bloodygoodmod-auctions.sqlite");
+        Path locationFile = configDirectory.resolve("bgm-database-folder.txt");
+        String folder;
+        try {
+            folder = Files.readString(locationFile).strip();
+        } catch (java.nio.file.NoSuchFileException missing) {
+            folder = "";
+        }
+
+        Path target = defaultPath;
+        if (!folder.isEmpty()) {
+            try {
+                Path directory = Path.of(folder);
+                if (!directory.isAbsolute()) {
+                    throw new IOException("Use an absolute folder path in " + locationFile.getFileName());
+                }
+                target = directory.normalize().resolve(defaultPath.getFileName());
+            } catch (InvalidPathException invalid) {
+                throw new IOException("Invalid database folder in " + locationFile.getFileName(), invalid);
+            }
+        }
+
+        Files.createDirectories(target.getParent());
+        if (!target.equals(defaultPath) && Files.notExists(target) && Files.isRegularFile(defaultPath)) {
+            copyDatabase(defaultPath, target);
+        }
+        databasePath = target;
+        return target;
+    }
+
+    private static void copyDatabase(Path source, Path target) throws IOException, SQLException {
+        Path copy = Files.createTempFile(target.getParent(), "bgm-database-", ".sqlite");
+        try {
+            // SQLite includes committed changes in the WAL when it creates the snapshot.
+            try (var connection = new JDBC().connect("jdbc:sqlite:" + source, new Properties());
+                 var statement = connection.prepareStatement("VACUUM INTO ?")) {
+                statement.setString(1, copy.toString());
+                statement.execute();
+            }
+            Files.move(copy, target);
+        } finally {
+            Files.deleteIfExists(copy);
+        }
+    }
+
     private Connection open() throws SQLException, IOException {
-        Files.createDirectories(path.getParent());
-        var connection = new JDBC().connect("jdbc:sqlite:" + path.toAbsolutePath(), new Properties());
+        Path path = resolveDatabasePath();
+        var connection = new JDBC().connect("jdbc:sqlite:" + path, new Properties());
         try (var statement = connection.createStatement()) {
             statement.execute("PRAGMA busy_timeout = 5000");
             statement.execute("PRAGMA journal_mode = WAL");

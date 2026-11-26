@@ -5,7 +5,7 @@ A client-side Fabric mod for Minecraft Java Edition 26.2. It uses Hypixel's publ
 ## Build and install
 
 1. Install JDK 25 and Gradle 9.6.0, then open a terminal in this folder.
-2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.15.jar`.
+2. Run `gradle build`. The mod JAR will be at `build/libs/bloodygoodmod-0.2.16.jar`.
 3. Set up a Minecraft 26.2 Fabric profile with Fabric Loader 0.20.1 or later and Fabric API 0.155.2+26.2. Put Fabric API, [Hypixel Mod API](https://modrinth.com/mod/hypixel-mod-api) 1.0.3 or later, and the built mod JAR in that profile's `mods` folder.
 4. Join Hypixel SkyBlock and run `/bgm`.
 
@@ -59,6 +59,14 @@ Route data and approaches are derived from [SkyHanni-REPO](https://github.com/Sk
 | `/bgm scan 5000000` | Limit purchase prices to five million coins. |
 | `/bgm scan 5000000 250000` | Limit purchase prices to five million coins and require at least 250,000 coins in estimated profit. |
 | `/bgm sample` | Show how many sales are recorded and request a new batch if the last sample was at least a minute ago. |
+
+## Store the auction database on another drive
+
+1. Close Minecraft. Open the Minecraft folder for your Prism instance and go to `config`.
+2. Create a plain text file named `bgm-database-folder.txt`. Enter one absolute folder path such as `D:\MinecraftData\BloodyGoodMod`. Use the folder path without quotes or a filename.
+3. Start Minecraft. On first database use the mod creates the destination folder and copies the existing default database there if the destination is empty. It keeps the old database as a backup and uses an existing destination database as-is.
+
+The selected folder holds the SQLite database and its temporary WAL and shared-memory files. Restart Minecraft to apply path changes. If you move the database again after using a custom location, close Minecraft and move the database and any accompanying `-wal` and `-shm` files from the currently active folder before pointing the mod at the new one. An empty or missing settings file selects the original database in `config`.
 
 ## How prices are estimated
 
